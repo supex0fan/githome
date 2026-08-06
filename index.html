@@ -1,0 +1,1106 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GitHub Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+    --blue: #2f81f7; --purple: #a371f7; --grey: #6e7681;
+    --accent: #2f81f7; --link: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #010409; color: #e6edf3;
+    font: 15px/normal "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: rgba(47, 129, 247, 0.35); }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .app {
+    width: 100%; height: 100vh; min-width: 1280px; overflow: hidden;
+    background: #0d1117; display: flex; flex-direction: column;
+  }
+
+  /* header */
+  header {
+    flex: none; display: flex; align-items: center; gap: 16px;
+    padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d;
+  }
+  .brand { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .pills { display: flex; gap: 10px; margin-left: 8px; }
+  .pill {
+    display: flex; align-items: center; gap: 6px; padding: 3px 9px;
+    border: 1px solid #30363d; border-radius: 20px;
+    font-family: var(--mono); font-size: 12.5px; color: #8b949e;
+  }
+  .pill i { width: 6px; height: 6px; border-radius: 50%; }
+  .right {
+    margin-left: auto; display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--grey);
+  }
+  .chip { padding: 3px 8px; border: 1px solid #30363d; border-radius: 4px; }
+  button.chip { background: none; color: inherit; font: inherit; cursor: pointer; }
+  button.chip:hover { border-color: #2f81f7; color: #e6edf3; }
+  #avatar { width: 24px; height: 24px; border-radius: 50%; background: #30363d; cursor: pointer; }
+  #auth { display: flex; gap: 8px; align-items: center; }
+  #auth[hidden] { display: none; }
+  #pat {
+    width: 280px; height: 28px; padding: 0 8px; border-radius: 4px;
+    border: 1px solid #30363d; background: #010409; color: #e6edf3;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  #pat::placeholder { color: var(--grey); }
+  #pat:focus { outline: none; border-color: #2f81f7; }
+
+  /* blocking strip */
+  .blocking {
+    flex: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+    background: #30363d; border-bottom: 1px solid #30363d;
+  }
+  .bcard {
+    background: #161b22; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 7px; border-top: 2px solid transparent;
+  }
+  .bcard:hover { background: #1c2128; }
+  .bcard .top { display: flex; align-items: center; gap: 8px; }
+  .bcard .kind {
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .bcard .when { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--grey); }
+  .bcard .t { font-size: 15px; font-weight: 600; line-height: 1.35; color: #e6edf3; text-wrap: pretty; }
+  .bcard .sub {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px; color: #8b949e;
+  }
+  .bcard .sub > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* when the card is tight, give up the ref before the repo name — which repo
+     broke matters more than which commit */
+  .bcard .sub b { color: var(--link); font-weight: 400; flex: 0 1 auto; min-width: 0; }
+  .bcard .sub span { flex: 0 6 auto; min-width: 0; }
+  .bcard { position: relative; }
+  /* the whole card is the link; the dismiss button sits above the overlay */
+  .bcard .stretch { position: absolute; inset: 0; }
+  .dismiss {
+    position: relative; z-index: 1; background: none; border: 0; padding: 0 0 0 8px;
+    cursor: pointer; color: var(--grey); font-family: var(--mono); font-size: 12px; line-height: 1;
+  }
+  .dismiss:hover { color: #e6edf3; }
+  .blocking > .empty, .blocking > .err { grid-column: 1 / -1; background: #161b22; }
+
+  /* columns */
+  .cols {
+    flex: 1; min-height: 0; display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 0.95fr);
+    gap: 1px; background: #30363d;
+  }
+  .col { background: #0d1117; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .col.stack { display: grid; grid-template-rows: 1fr 1fr; }
+  .col.stack > section + section { border-top: 1px solid #30363d; }
+  section { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .phead {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 11px 16px; border-bottom: 1px solid #30363d;
+  }
+  .ptitle { font-size: 14px; font-weight: 600; }
+  .meta, .count { font-family: var(--mono); font-size: 12px; color: var(--grey); }
+  .act {
+    margin-left: auto; font-family: var(--mono); font-size: 12px;
+    color: var(--link); background: none; border: 0; padding: 0; cursor: pointer;
+  }
+  .act:hover { text-decoration: underline; }
+  .sortbox { display: flex; align-items: center; gap: 8px; }
+  .sortbox .count { color: var(--grey); }
+  .list { flex: 1; min-height: 0; overflow-y: auto; }
+  .empty, .err { padding: 16px; font-family: var(--mono); font-size: 12.5px; color: #8b949e; }
+  .err { color: var(--red); line-height: 1.6; }
+
+  /* repositories */
+  .rtools { flex: none; display: flex; flex-direction: column; gap: 9px; padding: 11px 16px 10px; border-bottom: 1px solid #30363d; }
+  .rtools .row1 { display: flex; align-items: center; gap: 10px; }
+  .search {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
+    border: 1px solid #30363d; border-radius: 6px; background: #010409;
+  }
+  .search:focus-within { border-color: #2f81f7; }
+  .search span { font-family: var(--mono); font-size: 12.5px; color: #8b949e; }
+  .search input {
+    flex: 1; min-width: 0; border: 0; background: none; outline: none;
+    color: #e6edf3; font-family: var(--mono); font-size: 13px;
+  }
+  .search input::placeholder { color: #8b949e; }
+  .chips { display: flex; gap: 6px; }
+  .fchip {
+    display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 20px;
+    font-family: var(--mono); font-size: 12px; cursor: pointer; white-space: nowrap;
+    background: none; border: 1px solid #30363d; color: #8b949e;
+  }
+  .fchip:hover { border-color: #2f81f7; }
+  .fchip.on {
+    background: rgba(47, 129, 247, 0.15); border-color: var(--accent); color: var(--link);
+  }
+  .rgrid { display: grid; grid-template-columns: minmax(0, 1fr) 16px 60px 50px; align-items: center; gap: 0 12px; }
+  .rhead {
+    padding: 6px 16px; border-bottom: 1px solid #30363d;
+    position: sticky; top: 0; background: #0d1117;
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #8b949e;
+  }
+  .rhead .last { text-align: right; }
+  a.row.repo { padding: 9px 16px; border-bottom: 1px solid #21262d; }
+  a.row:hover { background: #161b22; }
+  a.row:hover .t { color: var(--link); }
+  a.row:hover .full { text-decoration: underline; }
+  .repo .name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .repo .name .l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .repo .full {
+    font-family: var(--mono); font-size: 14px; color: var(--link);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .repo .branch {
+    font-family: var(--mono); font-size: 12px; color: var(--grey); padding-left: 23px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .repo .ci { display: flex; }
+  .icon { fill: currentColor; flex: none; }
+  .oav { width: 16px; height: 16px; border-radius: 50%; flex: none; background: #21262d; }
+  .oav.org { border-radius: 4px; }
+  .repo .counts { font-family: var(--mono); font-size: 12.5px; color: #8b949e; }
+  .repo .when { font-family: var(--mono); font-size: 12px; color: var(--grey); text-align: right; }
+
+  /* work items */
+  .ghead {
+    display: flex; align-items: center; gap: 8px; padding: 9px 16px 8px;
+    border-bottom: 1px solid #30363d; position: sticky; top: 0; background: #0d1117;
+  }
+  .ghead .role {
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  .ghead .sub, .ghead .flag { font-family: var(--mono); font-size: 12px; color: #8b949e; }
+  .ghead .flag { margin-left: auto; }
+  a.row.work { display: flex; align-items: flex-start; gap: 9px; padding: 9px 16px; border-bottom: 1px solid #21262d; }
+  .work .glyph { font-family: var(--mono); font-size: 12.5px; flex: none; width: 11px; line-height: 1.5; }
+  .work .mid { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .work .t {
+    font-size: 13.5px; line-height: 1.4; color: #e6edf3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .work .sub { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: #8b949e; }
+  .work .tag { padding: 1px 5px; border-radius: 3px; background: #30363d; color: #8b949e; flex: none; }
+  .work .sub em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .work .end { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; flex: none; }
+  .work .end .num { font-family: var(--mono); font-size: 12px; color: var(--grey); }
+  .work .end .repo { font-family: var(--mono); font-size: 12px; color: #8b949e; }
+
+  /* runs */
+  a.row.run { display: flex; align-items: center; gap: 9px; padding: 8px 16px; border-bottom: 1px solid #21262d; }
+  .run .glyph { display: flex; flex: none; width: 16px; }
+  .run .mid { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .run .t { font-size: 13.5px; color: #e6edf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run .sub { font-family: var(--mono); font-size: 12px; color: var(--grey); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run .when { font-family: var(--mono); font-size: 12px; color: #8b949e; flex: none; }
+
+  /* settings */
+  dialog {
+    background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 12px;
+    padding: 0; width: 540px; max-width: 92vw;
+  }
+  dialog::backdrop { background: rgba(1, 4, 9, 0.7); }
+  dialog form { display: flex; flex-direction: column; gap: 16px; padding: 20px; }
+  dialog h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  dialog .sfilter { background: #010409; }
+  .slist {
+    max-height: 46vh; overflow-y: auto; border: 1px solid #30363d; border-radius: 6px;
+    background: #010409;
+  }
+  .sgroup {
+    position: sticky; top: 0; background: #010409; padding: 8px 12px 6px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #8b949e; border-bottom: 1px solid #21262d;
+  }
+  .srow {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    border-bottom: 1px solid #21262d;
+  }
+  .srow:hover { background: #161b22; }
+  .srow .sname {
+    flex: 1; min-width: 0; font-family: var(--mono); font-size: 12.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tog {
+    flex: none; width: 28px; height: 22px; border-radius: 6px; cursor: pointer;
+    border: 1px solid #30363d; background: none; font-family: var(--mono); font-size: 12px; line-height: 1;
+  }
+  .tog.on  { color: var(--green); border-color: rgba(63,185,80,0.4);  background: rgba(63,185,80,0.12); }
+  .tog.off { color: var(--red);   border-color: rgba(248,81,73,0.4); background: rgba(248,81,73,0.12); }
+  dialog .hint { color: #8b949e; font-size: 12px; font-weight: 400; line-height: 1.6; }
+  dialog .hint b { color: #e6edf3; font-family: var(--mono); font-weight: 400; }
+  dialog textarea {
+    background: #010409; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+    padding: 8px 10px; font-family: var(--mono); font-size: 13px; resize: vertical;
+  }
+  dialog textarea:focus { outline: none; border-color: var(--accent); }
+  .dlg-actions { display: flex; gap: 8px; align-items: center; }
+  .dlg-actions .grow { flex: 1; }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover { background: #2ea043; border-color: #3fb950; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  /* activity */
+  a.row.feed { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #21262d; }
+  .feed .dot { width: 6px; height: 6px; margin-top: 6px; }
+  .feed .mid { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .feed .t { font-size: 13.5px; line-height: 1.35; }
+  .feed .sub { font-family: var(--mono); font-size: 12px; color: #8b949e; }
+</style>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h3>Settings</h3>
+    <div class="hint">Ticked is included, crossed is ignored. Crossing an owner ignores every
+      repository under it; individual repositories can still be ticked back on.</div>
+    <label class="search sfilter">
+      <span>⌕</span>
+      <input id="sq" placeholder="Filter owners and repositories…" spellcheck="false">
+    </label>
+    <div id="slist" class="slist"></div>
+    <div class="dlg-actions">
+      <button type="button" id="restore" class="chip">Restore dismissed</button>
+      <span class="grow"></span>
+      <button value="cancel" class="chip">Cancel</button>
+      <button value="save" class="chip primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="app">
+  <header>
+    <div class="brand">Dashboard</div>
+    <div class="pills" id="pills"></div>
+    <div class="right">
+      <span id="synced"></span>
+      <div id="auth">
+        <!-- new-password stops Chrome offering the saved github.com login password here -->
+        <input id="pat" type="password" placeholder="Paste output of: gh auth token" autocomplete="new-password">
+        <button id="go" class="chip">Load</button>
+      </div>
+      <button id="cmdk" class="chip" title="Focus the repo filter">⌘K</button>
+      <button id="gear" class="chip" title="Settings">⚙</button>
+      <img id="avatar" alt="" hidden>
+    </div>
+  </header>
+
+  <section id="blocking" class="blocking"></section>
+
+  <div class="cols">
+    <div class="col">
+      <section id="repos">
+        <div class="rtools">
+          <div class="row1">
+            <span class="ptitle">Repositories</span>
+            <button class="act sortbox" id="sort"><span class="count"></span>sort ⇅</button>
+          </div>
+          <label class="search">
+            <span>⌕</span>
+            <input id="q" placeholder="Filter repos, branches, owners…">
+            <span>/</span>
+          </label>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div class="list"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section id="work">
+        <div class="phead">
+          <span class="ptitle">Your PRs &amp; issues</span>
+          <span class="count"></span>
+        </div>
+        <div class="list"></div>
+      </section>
+    </div>
+
+    <div class="col stack">
+      <section id="runs">
+        <div class="phead">
+          <span class="ptitle">Actions</span>
+          <span class="count"></span>
+          <span class="meta" style="margin-left:auto" id="runscope"></span>
+        </div>
+        <div class="list"></div>
+      </section>
+      <section id="feed">
+        <div class="phead">
+          <span class="ptitle">Activity</span>
+          <span class="count"></span>
+          <button class="act" id="markread">mark read</button>
+        </div>
+        <div class="list"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const GREEN = 'var(--green)', RED = 'var(--red)', AMBER = 'var(--amber)',
+      BLUE = 'var(--blue)', PURPLE = 'var(--purple)', GREY = 'var(--grey)';
+
+const ICON = {
+  repo: 'M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z',
+  forked: 'M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75v-.878a2.25 2.25 0 111.5 0v.878a2.25 2.25 0 01-2.25 2.25h-1.5v2.128a2.251 2.251 0 11-1.5 0V8.5h-1.5A2.25 2.25 0 013.5 6.25v-.878a2.25 2.25 0 111.5 0zM5 3.25a.75.75 0 10-1.5 0 .75.75 0 001.5 0zm6.75.75a.75.75 0 100-1.5.75.75 0 000 1.5zm-3 8.75a.75.75 0 100-1.5.75.75 0 000 1.5z',
+  lock: 'M4 4a4 4 0 018 0v2h.25c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0112.25 15h-8.5A1.75 1.75 0 012 13.25v-5.5C2 6.784 2.784 6 3.75 6H4V4zm8.25 3.5h-8.5a.25.25 0 00-.25.25v5.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25v-5.5a.25.25 0 00-.25-.25zM10.5 6V4a2.5 2.5 0 10-5 0v2h5z',
+  check: 'M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l4.5-4.5z',
+  xcircle: 'M2.343 13.657A8 8 0 1113.657 2.343 8 8 0 012.343 13.657zM6.03 4.97a.75.75 0 00-1.06 1.06L6.94 8 4.97 9.97a.75.75 0 101.06 1.06L8 9.06l1.97 1.97a.75.75 0 101.06-1.06L9.06 8l1.97-1.97a.75.75 0 10-1.06-1.06L8 6.94 6.03 4.97z',
+  dot: 'M8 4a4 4 0 110 8 4 4 0 010-8z',
+};
+const svg = (name, color, size = 14) =>
+  `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 16 16" style="color:${color}"><path fill-rule="evenodd" d="${ICON[name]}"/></svg>`;
+// GitHub renders user avatars as circles and org avatars as rounded squares.
+// Asked for at 2x so it stays crisp at 16px.
+const avatar = (o) => o?.avatar_url
+  ? `<img class="oav${o.type === 'Organization' ? ' org' : ''}" alt="" loading="lazy"
+       src="${esc(o.avatar_url + (o.avatar_url.includes('?') ? '&' : '?') + 's=32')}">`
+  : svg('repo', '#8b949e');
+// the avatar says who owns it, this says what kind of repo it is
+const kindIcon = (r) => r.private ? svg('lock', '#6e7681', 12) : r.fork ? svg('forked', '#6e7681', 12) : '';
+
+const el = (id) => document.getElementById(id);
+const pat = el('pat'), TOKEN_KEY = 'gh-dashboard-pat', SETTINGS_KEY = 'gh-dashboard-settings';
+
+// Defaults apply only on a first run; once saved, an empty ignore list stays empty.
+const stored = (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } })();
+const saveSettings = () =>
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ignore: S.ignore, dismissed: S.dismissed.slice(-200) }));
+
+// An entry matches an owner ("acme") or one exact repo ("acme/tools").
+// A "!acme/tools" entry forces that repo back in even when its owner is ignored.
+const rules = () => S.ignore.map((p) => p.trim().toLowerCase()).filter(Boolean);
+const ignored = (full) => {
+  const low = String(full || '').toLowerCase();
+  if (rules().includes('!' + low)) return false;
+  return rules().some((q) => q[0] !== '!' && (low === q || low.startsWith(q + '/')));
+};
+
+// Flip one owner or repo, adding whichever rule expresses the new state.
+function toggleIgnore(key) {
+  const low = key.toLowerCase(), was = ignored(key);
+  S.ignore = S.ignore.filter((p) => { const q = p.trim().toLowerCase(); return q !== low && q !== '!' + low; });
+  // after dropping this key's own rules, an owner rule may already cover it
+  if (!was && !ignored(key)) S.ignore = [...S.ignore, key];
+  else if (was && ignored(key)) S.ignore = [...S.ignore, '!' + key];   // inherited from the owner
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+const ago = (d) => {
+  const s = (Date.now() - new Date(d)) / 1000;
+  for (const [n, u] of [[31536000,'y'],[2592000,'mo'],[604800,'w'],[86400,'d'],[3600,'h'],[60,'m']])
+    if (s >= n) return `${Math.floor(s / n)}${u}`;
+  return 'now';
+};
+
+// ---------------------------------------------------------------- state
+
+// One store, six views. The panels are not independent: the blocking strip and
+// the header pills are derived from what the other panels fetched, and the repo
+// rows borrow their CI glyph from the Actions data.
+const S = {
+  me: null, repos: null, runs: null,
+  mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
+  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, rate: '', events: {},
+  ignore: stored.ignore ?? ['QUT-Motorsport'], dismissed: stored.dismissed ?? [],
+  orgs: null, allRepos: null,
+};
+const set = (patch) => { Object.assign(S, patch); draw(); };
+const failed = (key, e) => set({ err: { ...S.err, [key]: e.message } });
+
+// ---------------------------------------------------------------- api
+
+async function ghRes(path) {
+  const res = await fetch(path.startsWith('http') ? path : `https://api.github.com${path}`, {
+    headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json' },
+  });
+  const remaining = res.headers.get('x-ratelimit-remaining');
+  if (remaining) S.rate = `${remaining} left`;
+  if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value (a password or expired token gives this).');
+  if (res.status === 403 && remaining === '0') throw new Error('403 — rate limit exhausted, wait for the reset.');
+  return res;
+}
+
+async function gh(path) {
+  const res = await ghRes(path);
+  if (!res.ok) throw new Error(`${res.status} ${(await res.json().catch(() => ({}))).message || res.statusText}`);
+  return res.json();
+}
+
+const shortOf = (full) => full.split('/')[1] || full;
+
+// GraphQL answers 200 with a partial `data` plus `errors`, so a thrown error only
+// means nothing usable came back.
+async function gqlOnce(query, variables) {
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${pat.value.trim()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value.');
+  if (res.status >= 500) throw new Error(`${res.status} — GitHub timed out on the query. Retrying.`);
+  const body = await res.json().catch(() => ({}));
+  if (body.data?.rateLimit) S.rate = `${body.data.rateLimit.remaining} pts`;
+  if (!body.data) throw new Error(body.errors?.[0]?.message || `${res.status} ${res.statusText}`);
+  if (body.errors?.length) console.warn('graphql partial errors', body.errors);
+  return body.data;
+}
+
+// These queries are big enough that GitHub occasionally drops one, so retry once.
+// A rejected token is final and never retried.
+async function gql(query, variables = {}) {
+  try {
+    return await gqlOnce(query, variables);
+  } catch (e) {
+    if (/^401/.test(e.message)) throw e;
+    return gqlOnce(query, variables);
+  }
+}
+
+// Check suites carry everything the Actions panel needs; flatten them into the
+// same shape the REST workflow-run endpoint used to hand back.
+const suitesOf = (repo, commit, branch) => (commit?.checkSuites?.nodes || [])
+  .filter((cs) => cs.workflowRun)
+  .map((cs) => ({
+    id: cs.databaseId, repo,
+    name: cs.workflowRun.workflow?.name || 'workflow',
+    event: cs.workflowRun.event || '', html_url: cs.workflowRun.url,
+    // a cross-fork PR's check suite reports no branch, so prefer the one we know
+    head_branch: branch || cs.branch?.name || '', head_sha: cs.commit?.oid || commit.oid || '',
+    conclusion: (cs.conclusion || '').toLowerCase() || null,
+    status: (cs.status || '').toLowerCase(),
+    created_at: cs.createdAt,
+  }));
+
+const SUITE_FIELDS = `
+  checkSuites(first: 4) { nodes {
+    databaseId conclusion status createdAt
+    branch { name } commit { oid }
+    workflowRun { url event workflow { name } }
+  } }`;
+
+const WORK_FIELDS = `
+  __typename
+  ... on PullRequest {
+    number title url updatedAt isDraft headRefName
+    author { login } comments { totalCount }
+    labels(first: 10) { nodes { name } }
+    repository { nameWithOwner }
+  }
+  ... on Issue {
+    number title url updatedAt
+    author { login } comments { totalCount }
+    labels(first: 10) { nodes { name } }
+    repository { nameWithOwner }
+  }`;
+
+// One flat internal shape for PRs and issues alike, so nothing downstream has to
+// care which endpoint or type it came from.
+const normWork = (n) => n && n.repository ? {
+  repo: n.repository.nameWithOwner, number: n.number, title: n.title, url: n.url,
+  updated: n.updatedAt, draft: !!n.isDraft, comments: n.comments?.totalCount || 0,
+  author: n.author?.login || '?', labels: (n.labels?.nodes || []).map((l) => l.name),
+  headRef: n.headRefName || null, isPR: n.__typename === 'PullRequest',
+} : null;
+
+// Aliased per repo so only the repos on screen are walked. 25 repos x 5 commits
+// stays well inside the server's budget; 50 x 6 in one query got a 502.
+const runsQuery = (fulls) => `query {
+  rateLimit { cost remaining }
+${fulls.map((f, i) => {
+  const [o, n] = f.split('/');
+  return `  r${i}: repository(owner: ${JSON.stringify(o)}, name: ${JSON.stringify(n)}) {
+    nameWithOwner
+    defaultBranchRef { target { ... on Commit {
+      history(first: 5) { nodes { oid committedDate author { user { login } } ${SUITE_FIELDS} } }
+    } } }
+  }`;
+}).join('\n')}
+}`;
+
+const DASH_QUERY = `
+query($from: DateTime!, $to: DateTime!) {
+  rateLimit { cost remaining }
+  viewer {
+    login avatarUrl
+    contributionsCollection(from: $from, to: $to) {
+      commitContributionsByRepository(maxRepositories: 100) {
+        repository { nameWithOwner }
+        contributions(first: 1, orderBy: {field: OCCURRED_AT, direction: DESC}) { nodes { occurredAt } }
+      }
+    }
+    repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC},
+                 affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER],
+                 ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]) {
+      nodes {
+        nameWithOwner url isPrivate isFork pushedAt
+        owner { login avatarUrl __typename }
+        openPRs: pullRequests(states: OPEN) { totalCount }
+        openIssues: issues(states: OPEN) { totalCount }
+        defaultBranchRef { name target { ... on Commit { oid statusCheckRollup { state } } } }
+      }
+    }
+  }
+  mine:     search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: 25) {
+    nodes { ${WORK_FIELDS}
+      ... on PullRequest { commits(last: 1) { nodes { commit { oid ${SUITE_FIELDS} } } } }
+    } }
+  assigned: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+  reviews:  search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+  mentions: search(query: "is:open mentions:@me -author:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+}`;
+
+// ---------------------------------------------------------------- derive
+
+const RUN_STYLE = {
+  success: ['check', GREEN], failure: ['xcircle', RED], timed_out: ['xcircle', RED],
+  // action_required means "waiting for approval", not broken — an x reads as failure
+  action_required: ['dot', AMBER], in_progress: ['dot', AMBER],
+  cancelled: ['dot', GREY], skipped: ['dot', GREY], neutral: ['dot', GREY],
+  queued: ['dot', GREY], requested: ['dot', GREY], waiting: ['dot', GREY], pending: ['dot', GREY],
+};
+const runStyle = (r) => RUN_STYLE[r.conclusion || r.status] || ['dot', GREY];
+
+// statusCheckRollup is the default branch's real CI state and arrives with the
+// repo itself, so the glyph no longer waits on the runs query.
+const ROLLUP = {
+  SUCCESS: ['check', GREEN], FAILURE: ['xcircle', RED], ERROR: ['xcircle', RED],
+  PENDING: ['dot', AMBER], EXPECTED: ['dot', GREY],
+};
+
+const P1 = /\b(p0|p1|s0|s1|critical|urgent|blocker)\b|priority[:\/ -]*(high|critical)/i;
+const isP1 = (i) => (i.labels || []).some((l) => P1.test(l));
+
+const STALE_MS = 30 * 86400e3;
+const isFail = (r) => r.conclusion === 'failure' || r.conclusion === 'timed_out';
+
+// Ignored owners/repos are dropped here rather than at render time, so every
+// panel and every count goes through the same filter.
+const seen = (arr, of) => arr && arr.filter((x) => !ignored(of(x)));
+const vRepos = () => seen(S.repos, (r) => r.full_name);
+const vRuns = () => seen(S.runs, (r) => r.repo);
+const vWork = (k) => seen(S[k], (x) => x.repo);
+const vNotifs = () => seen(S.notifs, (n) => n.repository.full_name);
+
+const defaultBranch = (full) => (S.repos || []).find((r) => r.full_name === full)?.default_branch;
+
+// Head branches of the open PRs I authored or was assigned. Both search results
+// carry headRefName, so no per-repo PR listing is needed.
+const myBranches = (full) => new Set(
+  [...(S.mine || []), ...(S.assigned || [])]
+    .filter((i) => i.repo === full && i.headRef).map((i) => i.headRef));
+
+// A red run only counts as broken if nothing has superseded it: keep the newest
+// run per repo+branch+workflow, then keep the failures that still matter — on the
+// repo's default branch, or on the branch of one of my own PRs. Dismissed ids drop out.
+function ciBroken() {
+  const newest = new Map();
+  for (const r of vRuns() || []) {                       // S.runs is already newest-first
+    const k = `${r.repo}|${r.head_branch}|${r.name}`;
+    if (!newest.has(k)) newest.set(k, r);
+  }
+  return [...newest.values()].filter((r) =>
+    isFail(r) && !S.dismissed.includes(r.id) &&
+    (r.head_branch === defaultBranch(r.repo) || myBranches(r.repo).has(r.head_branch)));
+}
+const brokenRepos = () => new Set(ciBroken().map((r) => r.repo));
+
+// Latest workflow run per repo, used for both the CI glyph and the branch label.
+const latestRun = (full) => (S.runs || []).find((r) => r.repo === full);
+
+function decorate(r, broken) {
+  const run = latestRun(r.full_name);
+  // prefer the default branch's rollup; fall back to this repo's latest run, since
+  // a head commit with no checks reports no rollup at all
+  const [ciName, ciColor] = ROLLUP[r.ci_state] || (run ? runStyle(run) : [null, null]);
+  // GraphQL counts PRs and issues separately, so no subtracting one from the other
+  const prs = r.open_prs, issues = r.open_issues;
+  return {
+    ...r,
+    branch: run?.head_branch || r.default_branch,
+    ci: ciName ? svg(ciName, ciColor) : '',
+    ciFail: broken.has(r.full_name),
+    counts: prs == null ? '—' : `${prs}·${issues}`,
+    stale: Date.now() - new Date(r.pushed_at) > STALE_MS,
+  };
+}
+
+const myRepoNames = () => new Set((vWork('mine') || []).map((i) => i.repo));
+
+function visibleRepos(all) {
+  const q = S.q.trim().toLowerCase();
+  let rs = q ? all.filter((r) => `${r.full_name} ${r.branch}`.toLowerCase().includes(q)) : all;
+  if (S.filter === 'ci') rs = rs.filter((r) => r.ciFail);
+  if (S.filter === 'mine') { const m = myRepoNames(); rs = rs.filter((r) => m.has(r.full_name)); }
+  if (S.filter === 'stale') rs = rs.filter((r) => r.stale);
+  return [...rs].sort(S.sort === 'mine'
+    ? (a, b) => myWork(b) - myWork(a)
+    : (a, b) => new Date(b.pushed_at) - new Date(a.pushed_at));
+}
+
+// The four cards are just the most urgent things already on screen, ranked:
+// red CI first, then reviews someone is waiting on you for, then P1 issues.
+function blockingCards() {
+  const ciFails = ciBroken()
+    .map((r) => ({
+      kind: 'CI broken', color: RED, title: r.name, when: ago(r.created_at), href: r.html_url,
+      repo: r.repo, ref: `${r.head_branch || ''} @ ${(r.head_sha || '').slice(0, 7)}`, dismiss: r.id,
+    }));
+  const reviews = (vWork('reviews') || []).map((i) => ({
+    kind: 'Review', color: PURPLE, title: i.title, when: ago(i.updated), href: i.url,
+    repo: i.repo, ref: `#${i.number} · @${i.author}`,
+  }));
+  const p1 = (vWork('assigned') || []).filter(isP1).map((i) => ({
+    kind: 'P1 issue', color: AMBER, title: i.title, when: ago(i.updated), href: i.url,
+    repo: i.repo, ref: `#${i.number} · assigned to you`,
+  }));
+  return [...ciFails, ...reviews, ...p1];
+}
+
+function workGroups() {
+  const prRow = (i, tag, glyph, color) => ({
+    glyph, color, tag, title: i.title, num: `#${i.number}`, repoShort: shortOf(i.repo),
+    href: i.url, updated: i.updated,
+    meta: [i.draft ? 'draft' : null, i.comments ? `${i.comments} comments` : null, `updated ${ago(i.updated)}`]
+      .filter(Boolean).join(' · '),
+  });
+  const mine = [
+    ...(vWork('mine') || []).map((i) => prRow(i, 'author', i.draft ? '◌' : '⇢', i.draft ? GREY : GREEN)),
+    ...(vWork('assigned') || []).map((i) => prRow(i, 'assigned', '!', isP1(i) ? AMBER : GREY)),
+  ].sort((a, b) => new Date(b.updated) - new Date(a.updated));
+  const onMe = [
+    ...(vWork('reviews') || []).map((i) => prRow(i, 'review', '⇄', PURPLE)),
+    ...(vWork('mentions') || []).map((i) => prRow(i, 'mention', '@', BLUE)),
+  ].sort((a, b) => new Date(b.updated) - new Date(a.updated));
+
+  const oldest = (rows) => rows.length ? `oldest ${ago(rows[rows.length - 1].updated)}` : '';
+  return [
+    { role: 'Mine', sub: 'authored + assigned', color: GREEN, items: mine,
+      count: `${mine.length} open`, flag: oldest(mine) },
+    { role: 'Waiting on me', sub: 'review requested + mentioned', color: PURPLE, items: onMe,
+      count: `${onMe.length} open`, flag: oldest(onMe) },
+  ];
+}
+
+// ---------------------------------------------------------------- render
+
+const list = (id) => el(id).querySelector('.list');
+const count = (id, text, color) => {
+  const c = el(id).querySelector('.count');
+  if (!c) return;
+  c.textContent = text; c.style.color = color || '';
+};
+
+// Panels resolve at their own pace, so each one owns three states: an error it
+// hit, the data it got, or the fact that it is still in flight.
+const panel = (data, key, rows) =>
+  S.err[key] ? `<div class="err">${esc(S.err[key])}</div>`
+  : data == null ? '<div class="empty">Loading…</div>'
+  : !data.length ? '<div class="empty">Nothing here.</div>'
+  : rows(data);
+
+const drawPills = () => {
+  const blocking = blockingCards().length;
+  const unread = (vNotifs() || []).filter((n) => n.unread).length;
+  el('pills').innerHTML = [
+    [blocking, 'blocking', RED], [(vWork('reviews') || []).length, 'reviews waiting', PURPLE],
+    [ciBroken().length, 'CI broken', RED], [unread, 'unread', BLUE],
+  ].map(([n, label, c]) =>
+    `<div class="pill"><i style="background:${c}"></i>${n} ${label}</div>`).join('');
+};
+
+function drawBlocking() {
+  const cards = blockingCards();
+  const sec = el('blocking');
+  const anyErr = S.err.runs || S.err.reviews || S.err.assigned;
+  if (anyErr && !cards.length) { sec.innerHTML = `<div class="err">${esc(anyErr)}</div>`; return; }
+  if (S.runs == null && S.reviews == null) { sec.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (!cards.length) { sec.innerHTML = '<div class="empty">Nothing blocking.</div>'; return; }
+  const slots = cards.slice(0, 4);
+  sec.innerHTML = (slots.length ? slots : [null]).concat(Array(Math.max(0, 4 - slots.length)).fill(null))
+    .slice(0, 4).map((c) => c ? `
+      <div class="row bcard" style="border-top-color:${c.color}">
+        <div class="top">
+          <span class="kind" style="color:${c.color}">${esc(c.kind)}</span>
+          <span class="when">${esc(c.when)}</span>
+          ${c.dismiss ? `<button class="dismiss" data-dismiss="${c.dismiss}" title="Dismiss until it fails again">✕</button>` : ''}
+        </div>
+        <a class="stretch" href="${esc(c.href)}" target="_blank" rel="noopener"></a>
+        <div class="t">${esc(c.title)}</div>
+        <div class="sub"><b>${esc(c.repo)}</b><span>${esc(c.ref)}</span></div>
+      </div>` : '<div class="bcard"></div>').join('');
+}
+
+const SORT_LABEL = { anyone: 'last work by anyone', mine: 'last work by me' };
+// S.events maps repo -> when I last worked there; 0 sorts unknowns last. Two
+// sources: contributionsCollection covers a year across all branches but buckets
+// by day, and the default-branch commits already fetched for the Actions feed give
+// an exact time when one of them is mine. Newer of the two wins.
+const myWork = (r) => S.events[r.full_name] ? +new Date(S.events[r.full_name]) : 0;
+const lastWork = (r) => S.sort === 'mine'
+  ? (myWork(r) ? ago(S.events[r.full_name]) : '—')
+  : ago(r.pushed_at);
+
+function drawRepos() {
+  const broken = brokenRepos();
+  const all = (vRepos() || []).map((r) => decorate(r, broken));
+  const rows = visibleRepos(all);
+  count('repos', S.repos ? SORT_LABEL[S.sort] : '');
+
+  const m = myRepoNames();
+  el('chips').innerHTML = [
+    ['all', 'All', all.length], ['ci', 'CI broken', all.filter((r) => r.ciFail).length],
+    ['mine', 'My PRs', all.filter((r) => m.has(r.full_name)).length], ['stale', 'Stale', all.filter((r) => r.stale).length],
+  ].map(([k, label, n]) =>
+    `<button class="fchip${S.filter === k ? ' on' : ''}" data-filter="${k}">${label}<span>${n}</span></button>`).join('');
+
+  const head = `<div class="rgrid rhead"><span>repo / branch</span><span>ci</span><span>pr·is</span><span class="last">last</span></div>`;
+  list('repos').innerHTML = head + panel(rows, 'repos', (rs) => rs.map((r) => `
+    <a class="row repo rgrid" href="${esc(r.html_url)}" target="_blank" rel="noopener">
+      <span class="name">
+        <span class="l1">${avatar(r.owner)}<span class="full">${esc(r.full_name)}</span>${kindIcon(r)}</span>
+        <span class="branch">${esc(r.branch || '')}</span>
+      </span>
+      <span class="ci">${r.ci}</span>
+      <span class="counts">${esc(r.counts)}</span>
+      <span class="when">${esc(lastWork(r))}</span>
+    </a>`).join(''));
+}
+
+function drawWork() {
+  const groups = workGroups();
+  const loaded = S.mine && S.assigned && S.reviews && S.mentions;
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  count('work', loaded ? `${total} open` : '');
+  const anyErr = S.err.mine || S.err.assigned || S.err.reviews || S.err.mentions;
+  list('work').innerHTML =
+    anyErr && !total ? `<div class="err">${esc(anyErr)}</div>`
+    : !loaded && !total ? '<div class="empty">Loading…</div>'
+    : groups.map((g) => `
+      <div class="ghead">
+        <span class="role" style="color:${g.color}">${esc(g.role)}</span>
+        <span class="sub">${esc(g.sub)}</span>
+        <span class="flag">${esc(g.count)}${g.flag ? ' · ' + esc(g.flag) : ''}</span>
+      </div>
+      ${g.items.length ? g.items.map((i) => `
+        <a class="row work" href="${esc(i.href)}" target="_blank" rel="noopener">
+          <span class="glyph" style="color:${i.color}">${i.glyph}</span>
+          <span class="mid">
+            <span class="t">${esc(i.title)}</span>
+            <span class="sub"><span class="tag">${esc(i.tag)}</span><em>${esc(i.meta)}</em></span>
+          </span>
+          <span class="end"><span class="num">${esc(i.num)}</span><span class="repo">${esc(i.repoShort)}</span></span>
+        </a>`).join('') : '<div class="empty">Nothing here.</div>'}`).join('');
+}
+
+function drawRuns() {
+  const all = vRuns();
+  const runs = (all || []).slice(0, 20);
+  const broken = ciBroken().length;
+  count('runs', all ? `${broken} broken` : '', broken ? RED : GREEN);
+  el('runscope').textContent = all ? `${new Set(all.map((r) => r.repo)).size} repos` : '';
+  list('runs').innerHTML = panel(all && runs, 'runs', (rs) => rs.map((r) => {
+    const [name, color] = runStyle(r);
+    return `
+      <a class="row run" href="${esc(r.html_url)}" target="_blank" rel="noopener">
+        <span class="glyph">${svg(name, color)}</span>
+        <span class="mid">
+          <span class="t">${esc(r.name)}</span>
+          <span class="sub">${esc(r.repo)} · ${esc(r.event)} · ${esc(r.head_branch || '')} · ${esc((r.head_sha || '').slice(0, 7))}</span>
+        </span>
+        <span class="when">${esc(ago(r.created_at))}</span>
+      </a>`;
+  }).join(''));
+}
+
+// Notification subjects carry an API url. Issues and PRs map cleanly onto a web
+// url; releases/discussions/commits don't, so those fall back to the repo page.
+const webUrl = (n) => {
+  const m = /\/repos\/(.+)\/(issues|pulls)\/(\d+)$/.exec(n.subject.url || '');
+  return m ? `https://github.com/${m[1]}/${m[2] === 'pulls' ? 'pull' : 'issues'}/${m[3]}` : n.repository.html_url;
+};
+
+function drawFeed() {
+  const ns0 = vNotifs();
+  count('feed', ns0 ? `${ns0.filter((n) => n.unread).length} unread` : '');
+  list('feed').innerHTML = panel(ns0, 'notifs', (ns) => ns.map((n) => {
+    const dot = !n.unread ? '#484f58' : n.reason === 'ci_activity' ? RED : BLUE;
+    return `
+      <a class="row feed" style="background:${n.unread ? 'rgba(47,129,247,0.10)' : 'transparent'}"
+         href="${esc(webUrl(n))}" target="_blank" rel="noopener">
+        <span class="dot" style="background:${dot}"></span>
+        <span class="mid">
+          <span class="t" style="color:${n.unread ? '#e6edf3' : '#8b949e'}">${esc(n.subject.title)}</span>
+          <span class="sub">${esc(n.repository.full_name)} · ${esc(n.reason.replace(/_/g, ' '))} · ${esc(ago(n.updated_at))}</span>
+        </span>
+      </a>`;
+  }).join(''));
+}
+
+// Every owner the account can reach: me, my orgs, and any owner that shows up in
+// the repo list (covers collaborator access to someone else's repo).
+const ownerList = () => {
+  const m = new Map();
+  if (S.me) m.set(S.me.login, { login: S.me.login, avatar_url: S.me.avatar_url, type: 'User' });
+  for (const o of S.orgs || []) m.set(o.login, o);
+  for (const r of S.allRepos || []) if (!m.has(r.owner.login)) m.set(r.owner.login, r.owner);
+  return [...m.values()].sort((a, b) => a.login.localeCompare(b.login));
+};
+
+const togBtn = (key) => {
+  const off = ignored(key);
+  return `<button type="button" class="tog ${off ? 'off' : 'on'}" data-key="${esc(key)}"
+    title="${off ? 'Ignored — click to include' : 'Included — click to ignore'}">${off ? '✕' : '✓'}</button>`;
+};
+
+function drawSettings() {
+  const dlg = el('settings');
+  if (!dlg.open) return;
+  const q = el('sq').value.trim().toLowerCase();
+  const owners = ownerList().filter((o) => o.login.toLowerCase().includes(q));
+  const repos = (S.allRepos || []).filter((r) => r.full_name.toLowerCase().includes(q));
+  const rows = (items, key, label) => items.map((x) => `
+    <div class="srow">${avatar(x.owner || x)}<span class="sname">${esc(label(x))}</span>${togBtn(key(x))}</div>`).join('');
+
+  el('slist').innerHTML =
+    S.allRepos == null ? '<div class="empty">Loading…</div>'
+    : `<div class="sgroup">Owners · ${owners.length}</div>${rows(owners, (o) => o.login, (o) => o.login)}
+       <div class="sgroup">Repositories · ${repos.length}</div>${
+         repos.length ? rows(repos, (r) => r.full_name, (r) => r.full_name)
+                      : '<div class="empty">Nothing matches.</div>'}`;
+}
+
+const drawSynced = () => {
+  if (!S.synced) return;
+  const since = ago(S.synced);
+  el('synced').textContent =
+    [S.rate, since === 'now' ? 'synced just now' : `synced ${since} ago`].filter(Boolean).join(' · ');
+};
+
+function draw() {
+  drawSynced(); drawPills(); drawBlocking(); drawRepos(); drawWork(); drawRuns(); drawFeed(); drawSettings();
+}
+
+// The dashboard only fetches its top slice of repos; the settings list needs
+// everything the account can reach, so it loads separately and once.
+// ponytail: 5 pages is 500 repos — raise the cap if anyone actually hits it.
+const ALL_REPOS_QUERY = `
+query($cursor: String) {
+  rateLimit { cost remaining }
+  viewer {
+    organizations(first: 100) { nodes { login avatarUrl __typename } }
+    repositories(first: 100, after: $cursor, orderBy: {field: NAME, direction: ASC},
+                 affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER],
+                 ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]) {
+      pageInfo { hasNextPage endCursor }
+      nodes { nameWithOwner owner { login avatarUrl __typename } }
+    }
+  }
+}`;
+
+async function loadSettingsData() {
+  if (S.allRepos) return;
+  const out = [];
+  let cursor = null;
+  for (let page = 1; page <= 5; page++) {
+    const d = await gql(ALL_REPOS_QUERY, { cursor }).catch(() => null);
+    if (!d?.viewer) break;
+    if (page === 1) set({ orgs: (d.viewer.organizations?.nodes || []).map(ghOwner) });
+    const conn = d.viewer.repositories;
+    out.push(...(conn.nodes || []).map((r) => ({ full_name: r.nameWithOwner, owner: ghOwner(r.owner) })));
+    set({ allRepos: [...out] });
+    if (!conn.pageInfo?.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+  if (!S.allRepos) set({ allRepos: [] });
+}
+
+// ---------------------------------------------------------------- load
+
+const ghOwner = (o) => ({ login: o.login, avatar_url: o.avatarUrl, type: o.__typename });
+const YEAR_MS = 365 * 86400e3;
+
+async function load() {
+  const token = pat.value.trim();
+  if (!token) return pat.focus();
+  localStorage.setItem(TOKEN_KEY, token);
+  set({ me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
+        mentions: null, notifs: null, events: {}, err: {}, synced: Date.now() });
+
+  // Notifications are the one thing with no GraphQL equivalent, so they stay REST
+  // and run alongside rather than blocking the rest of the dashboard.
+  gh('/notifications?per_page=30').then((notifs) => set({ notifs }), (e) => failed('notifs', e));
+
+  let d;
+  try {
+    const now = Date.now();
+    d = await gql(DASH_QUERY, {
+      from: new Date(now - YEAR_MS).toISOString(), to: new Date(now).toISOString(),
+    });
+  } catch (e) {
+    for (const k of ['repos', 'runs', 'mine', 'assigned', 'reviews', 'mentions']) failed(k, e);
+    el('auth').hidden = false;
+    return;
+  }
+
+  const v = d.viewer;
+  const me = { login: v.login, avatar_url: v.avatarUrl };
+  el('avatar').src = me.avatar_url;
+  el('avatar').hidden = false;
+  el('auth').hidden = true;
+
+  // over-fetch, then drop ignored repos, so the list stays full instead of shrinking
+  const repoNodes = (v.repositories?.nodes || []).filter((r) => !ignored(r.nameWithOwner)).slice(0, 25);
+
+  const repos = repoNodes.map((r) => ({
+    full_name: r.nameWithOwner, html_url: r.url, private: r.isPrivate, fork: r.isFork,
+    pushed_at: r.pushedAt, owner: ghOwner(r.owner), default_branch: r.defaultBranchRef?.name,
+    open_prs: r.openPRs.totalCount, open_issues: r.openIssues.totalCount,
+    ci_state: r.defaultBranchRef?.target?.statusCheckRollup?.state,
+  }));
+
+  // day-bucketed contributions across every branch, refined below where possible
+  const events = {};
+  for (const c of v.contributionsCollection?.commitContributionsByRepository || []) {
+    const at = c.contributions?.nodes?.[0]?.occurredAt;
+    if (at) events[c.repository.nameWithOwner] = at;
+  }
+
+  const work = (key) => (d[key]?.nodes || []).map(normWork).filter(Boolean);
+  const mine = work('mine');
+
+  // CI on my own PR branches, which default-branch history never sees
+  const prRuns = [];
+  for (const n of d.mine?.nodes || []) {
+    const full = n.repository?.nameWithOwner;
+    const commit = n.commits?.nodes?.[0]?.commit;
+    if (full && commit && !ignored(full)) prRuns.push(...suitesOf(full, commit, n.headRefName));
+  }
+
+  set({
+    me, repos, events, mine,
+    assigned: work('assigned'), reviews: work('reviews'), mentions: work('mentions'),
+  });
+
+  if (!repos.length) return set({ runs: [] });
+
+  // Second query: default-branch runs for the repos actually on screen. Kept apart
+  // from the first because folding it in pushed GitHub past its query timeout.
+  gql(runsQuery(repos.map((r) => r.full_name))).then((rd) => {
+    const runs = [...prRuns];
+    const events2 = { ...S.events };
+    for (const key of Object.keys(rd)) {
+      const node = rd[key];
+      if (key === 'rateLimit' || !node?.nameWithOwner) continue;
+      for (const c of node.defaultBranchRef?.target?.history?.nodes || []) {
+        runs.push(...suitesOf(node.nameWithOwner, c));
+        // an exact commit time beats the day-bucketed contribution when it is mine
+        if (c.author?.user?.login === v.login) {
+          const prev = events2[node.nameWithOwner];
+          if (!prev || new Date(c.committedDate) > new Date(prev)) events2[node.nameWithOwner] = c.committedDate;
+        }
+      }
+    }
+    set({ events: events2, runs: runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+  }, (e) => { set({ runs: prRuns }); failed('runs', e); });
+}
+
+// ---------------------------------------------------------------- events
+
+el('go').onclick = load;
+pat.onkeydown = (e) => { if (e.key === 'Enter') load(); };
+el('avatar').onclick = () => { el('auth').hidden = !el('auth').hidden; if (!el('auth').hidden) pat.focus(); };
+el('q').oninput = (e) => set({ q: e.target.value });
+el('sort').onclick = () => set({ sort: S.sort === 'anyone' ? 'mine' : 'anyone' });
+el('chips').onclick = (e) => {
+  const b = e.target.closest('[data-filter]');
+  if (b) set({ filter: b.dataset.filter });
+};
+el('blocking').onclick = (e) => {
+  const b = e.target.closest('[data-dismiss]');
+  if (!b) return;
+  S.dismissed = [...S.dismissed, +b.dataset.dismiss].slice(-200);
+  saveSettings();
+  draw();
+};
+
+const dlg = el('settings');
+let ignoreSnapshot = [];
+el('gear').onclick = () => {
+  ignoreSnapshot = [...S.ignore];
+  el('sq').value = '';
+  el('restore').textContent = `Restore ${S.dismissed.length} dismissed`;
+  el('restore').disabled = !S.dismissed.length;
+  dlg.showModal();
+  drawSettings();
+  loadSettingsData();
+};
+el('sq').oninput = drawSettings;
+el('slist').onclick = (e) => {
+  const b = e.target.closest('[data-key]');
+  if (!b) return;
+  toggleIgnore(b.dataset.key);
+  drawSettings();
+};
+el('restore').onclick = () => {
+  S.dismissed = [];
+  saveSettings();
+  draw();
+  el('restore').disabled = true;
+  el('restore').textContent = 'Restore 0 dismissed';
+};
+dlg.onclose = () => {
+  if (dlg.returnValue !== 'save') { S.ignore = ignoreSnapshot; return; }
+  saveSettings();
+  load();                      // ignored repos are skipped at fetch time, so refetch
+};
+
+const focusFilter = () => { el('q').focus(); el('q').select(); };
+el('cmdk').onclick = focusFilter;
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) { e.preventDefault(); focusFilter(); }
+});
+
+// Marking every notification read cannot be undone, so the first click only arms it.
+let armed = false;
+el('markread').onclick = async () => {
+  if (!armed) {
+    armed = true;
+    el('markread').textContent = 'sure?';
+    setTimeout(() => { armed = false; el('markread').textContent = 'mark read'; }, 4000);
+    return;
+  }
+  armed = false;
+  el('markread').textContent = 'mark read';
+  await ghRes('/notifications').then(() => fetch('https://api.github.com/notifications', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json' },
+    body: JSON.stringify({ last_read_at: new Date().toISOString() }),
+  }));
+  set({ notifs: (S.notifs || []).map((n) => ({ ...n, unread: false })) });
+};
+
+setInterval(drawSynced, 10000);
+
+draw();
+pat.value = localStorage.getItem(TOKEN_KEY) || '';
+if (pat.value) load(); else pat.focus();
+</script>
