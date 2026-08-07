@@ -132,6 +132,11 @@ S.sort = 'anyone';
 ck('sort by anyone uses pushed_at', order(), 'o/a,o/b');
 S.sort = 'mine';
 ck('sort by me uses my events, unknowns last', order(), 'o/b,o/a');
+const glyph = (i) => ICON[Object.keys(ICON).find((k) => typeIcon(i).includes(ICON[k]))];
+ck('an open PR gets the pull-request octicon', glyph({ isPR: true }), ICON.pr);
+ck('a draft PR gets the draft octicon', glyph({ isPR: true, draft: true }), ICON.prdraft);
+ck('an issue gets the issue octicon', glyph({ isPR: false, labels: [] }), ICON.issue);
+
 const points = (weeks) => sparkline(weeks).match(/points="([^"]+)"/)[1];
 ck('sparkline puts the peak on top and the trough on the baseline',
    points([0, 5, 0]), '0.0,17.0 36.0,1.0 72.0,17.0');
