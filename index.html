@@ -147,7 +147,7 @@
   .fchip.on {
     background: rgba(47, 129, 247, 0.15); border-color: var(--accent); color: var(--link);
   }
-  .rgrid { display: grid; grid-template-columns: minmax(0, 1fr) 16px 60px 50px; align-items: center; gap: 0 12px; }
+  .rgrid { display: grid; grid-template-columns: minmax(0, 1fr) 72px 16px 60px 50px; align-items: center; gap: 0 12px; }
   .rhead {
     padding: 6px 16px; border-bottom: 1px solid #30363d;
     position: sticky; top: 0; background: #0d1117;
@@ -166,10 +166,14 @@
     font-family: var(--mono); font-size: 14px; color: var(--link);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .repo .branch {
-    font-family: var(--mono); font-size: 12px; color: var(--grey); padding-left: 23px;
+  .repo .lang {
+    display: flex; align-items: center; gap: 6px; padding-left: 23px;
+    font-family: var(--mono); font-size: 12px; color: var(--grey);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .repo .lang i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .spark { display: block; overflow: visible; }
+  .spark.pending { opacity: 0.25; }
   .repo .ci { display: flex; }
   .icon { fill: currentColor; flex: none; }
   .oav { width: 16px; height: 16px; border-radius: 50%; flex: none; background: #21262d; }
@@ -198,7 +202,12 @@
   .work .sub { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: #8b949e; }
   .work .tag { padding: 1px 5px; border-radius: 3px; background: #30363d; color: #8b949e; flex: none; }
   .work .sub em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .work .diff { flex: none; }
+  .work .diff .add { color: var(--green); }
+  .work .diff .del { color: var(--red); }
+  .work .rev { padding: 1px 5px; border-radius: 3px; flex: none; border: 1px solid currentColor; }
   .work .end { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; flex: none; }
+  .work .end .n2 { display: flex; align-items: center; gap: 5px; }
   .work .end .num { font-family: var(--mono); font-size: 12px; color: var(--grey); }
   .work .end .repo { font-family: var(--mono); font-size: 12px; color: #8b949e; }
 
@@ -312,7 +321,7 @@
           </div>
           <label class="search">
             <span>⌕</span>
-            <input id="q" placeholder="Filter repos, branches, owners…">
+            <input id="q" placeholder="Filter repos, languages, owners…">
             <span>/</span>
           </label>
           <div class="chips" id="chips"></div>
@@ -418,7 +427,7 @@ const ago = (d) => {
 const S = {
   me: null, repos: null, runs: null,
   mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
-  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, rate: '', events: {},
+  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, rate: '', events: {}, spark: null,
   ignore: stored.ignore ?? ['QUT-Motorsport'], dismissed: stored.dismissed ?? [],
   orgs: null, allRepos: null,
 };
@@ -428,9 +437,11 @@ const failed = (key, e) => set({ err: { ...S.err, [key]: e.message } });
 // ---------------------------------------------------------------- api
 
 async function ghRes(path) {
-  const res = await fetch(path.startsWith('http') ? path : `https://api.github.com${path}`, {
-    headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json' },
-  });
+  const url = path.startsWith('http') ? path : `https://api.github.com${path}`;
+  const opts = { headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json' } };
+  // a network change cancels everything in flight, and one dropped call otherwise
+  // leaves a panel showing an error it will never retry out of
+  const res = await fetch(url, opts).catch(() => fetch(url, opts));
   const remaining = res.headers.get('x-ratelimit-remaining');
   if (remaining) S.rate = `${remaining} left`;
   if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value (a password or expired token gives this).');
@@ -463,14 +474,17 @@ async function gqlOnce(query, variables) {
   return body.data;
 }
 
-// These queries are big enough that GitHub occasionally drops one, so retry once.
-// A rejected token is final and never retried.
+// These queries run for seconds, long enough for GitHub to drop one or for the
+// browser to cancel it over a network change, so back off and try again. A
+// rejected token is final and never retried.
 async function gql(query, variables = {}) {
-  try {
-    return await gqlOnce(query, variables);
-  } catch (e) {
-    if (/^401/.test(e.message)) throw e;
-    return gqlOnce(query, variables);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await gqlOnce(query, variables);
+    } catch (e) {
+      if (/^401/.test(e.message) || attempt === 2) throw e;
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
   }
 }
 
@@ -500,9 +514,11 @@ const WORK_FIELDS = `
   __typename
   ... on PullRequest {
     number title url updatedAt isDraft headRefName
+    reviewDecision additions deletions
     author { login } comments { totalCount }
     labels(first: 10) { nodes { name } }
     repository { nameWithOwner }
+    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }
   ... on Issue {
     number title url updatedAt
@@ -518,6 +534,8 @@ const normWork = (n) => n && n.repository ? {
   updated: n.updatedAt, draft: !!n.isDraft, comments: n.comments?.totalCount || 0,
   author: n.author?.login || '?', labels: (n.labels?.nodes || []).map((l) => l.name),
   headRef: n.headRefName || null, isPR: n.__typename === 'PullRequest',
+  review: n.reviewDecision || null, added: n.additions, deleted: n.deletions,
+  ci_state: n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state || null,
 } : null;
 
 // Aliased per repo so only the repos on screen are walked. 25 repos x 5 commits
@@ -551,6 +569,7 @@ query($from: DateTime!, $to: DateTime!) {
                  ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]) {
       nodes {
         nameWithOwner url isPrivate isFork pushedAt
+        primaryLanguage { name color }
         owner { login avatarUrl __typename }
         openPRs: pullRequests(states: OPEN) { totalCount }
         openIssues: issues(states: OPEN) { totalCount }
@@ -634,7 +653,6 @@ function decorate(r, broken) {
   const prs = r.open_prs, issues = r.open_issues;
   return {
     ...r,
-    branch: run?.head_branch || r.default_branch,
     ci: ciName ? svg(ciName, ciColor) : '',
     ciFail: broken.has(r.full_name),
     counts: prs == null ? '—' : `${prs}·${issues}`,
@@ -646,7 +664,7 @@ const myRepoNames = () => new Set((vWork('mine') || []).map((i) => i.repo));
 
 function visibleRepos(all) {
   const q = S.q.trim().toLowerCase();
-  let rs = q ? all.filter((r) => `${r.full_name} ${r.branch}`.toLowerCase().includes(q)) : all;
+  let rs = q ? all.filter((r) => `${r.full_name} ${r.language}`.toLowerCase().includes(q)) : all;
   if (S.filter === 'ci') rs = rs.filter((r) => r.ciFail);
   if (S.filter === 'mine') { const m = myRepoNames(); rs = rs.filter((r) => m.has(r.full_name)); }
   if (S.filter === 'stale') rs = rs.filter((r) => r.stale);
@@ -674,13 +692,27 @@ function blockingCards() {
   return [...ciFails, ...reviews, ...p1];
 }
 
+// GitHub only sets reviewDecision when the repo asks for reviews at all, so an
+// absent one means "no review required", not "not reviewed yet".
+const REVIEW = {
+  APPROVED: ['approved', GREEN], CHANGES_REQUESTED: ['changes requested', RED],
+  REVIEW_REQUIRED: ['review required', AMBER],
+};
+
 function workGroups() {
-  const prRow = (i, tag, glyph, color) => ({
-    glyph, color, tag, title: i.title, num: `#${i.number}`, repoShort: shortOf(i.repo),
-    href: i.url, updated: i.updated,
-    meta: [i.draft ? 'draft' : null, i.comments ? `${i.comments} comments` : null, `updated ${ago(i.updated)}`]
-      .filter(Boolean).join(' · '),
-  });
+  const prRow = (i, tag, glyph, color) => {
+    const [ciName, ciColor] = ROLLUP[i.ci_state] || [];
+    const [revText, revColor] = REVIEW[i.review] || [];
+    return {
+      glyph, color, tag, title: i.title, num: `#${i.number}`, repoShort: shortOf(i.repo),
+      href: i.url, updated: i.updated, revText, revColor,
+      ci: ciName ? svg(ciName, ciColor, 12) : '',
+      diff: i.added == null ? '' :
+        `<span class="add">+${i.added}</span> <span class="del">−${i.deleted}</span>`,
+      meta: [i.draft ? 'draft' : null, i.comments ? `${i.comments} comments` : null,
+             ago(i.updated)].filter(Boolean).join(' · '),
+    };
+  };
   const mine = [
     ...(vWork('mine') || []).map((i) => prRow(i, 'author', i.draft ? '◌' : '⇢', i.draft ? GREY : GREEN)),
     ...(vWork('assigned') || []).map((i) => prRow(i, 'assigned', '!', isP1(i) ? AMBER : GREY)),
@@ -758,6 +790,16 @@ const lastWork = (r) => S.sort === 'mine'
   ? (myWork(r) ? ago(S.events[r.full_name]) : '—')
   : ago(r.pushed_at);
 
+// A year of weekly commit counts as one polyline. Flat-lines a repo with no
+// commits at all rather than dividing by a zero maximum.
+function sparkline(weeks) {
+  const w = 72, h = 18, max = Math.max(1, ...weeks);
+  const pts = weeks.map((n, i) =>
+    `${(i * w / (weeks.length - 1)).toFixed(1)},${(h - 1 - (n / max) * (h - 2)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="color:${GREEN}">
+    <polyline fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" points="${pts}"/></svg>`;
+}
+
 function drawRepos() {
   const broken = brokenRepos();
   const all = (vRepos() || []).map((r) => decorate(r, broken));
@@ -771,13 +813,15 @@ function drawRepos() {
   ].map(([k, label, n]) =>
     `<button class="fchip${S.filter === k ? ' on' : ''}" data-filter="${k}">${label}<span>${n}</span></button>`).join('');
 
-  const head = `<div class="rgrid rhead"><span>repo / branch</span><span>ci</span><span>pr·is</span><span class="last">last</span></div>`;
+  const head = `<div class="rgrid rhead"><span>repo / language</span><span>52w</span><span>ci</span><span>pr·is</span><span class="last">last</span></div>`;
   list('repos').innerHTML = head + panel(rows, 'repos', (rs) => rs.map((r) => `
     <a class="row repo rgrid" href="${esc(r.html_url)}" target="_blank" rel="noopener">
       <span class="name">
         <span class="l1">${avatar(r.owner)}<span class="full">${esc(r.full_name)}</span>${kindIcon(r)}</span>
-        <span class="branch">${esc(r.branch || '')}</span>
+        <span class="lang">${r.language
+          ? `<i style="background:${esc(r.lang_color)}"></i>${esc(r.language)}` : ''}</span>
       </span>
+      <span>${S.spark?.[r.full_name] ? sparkline(S.spark[r.full_name]) : ''}</span>
       <span class="ci">${r.ci}</span>
       <span class="counts">${esc(r.counts)}</span>
       <span class="when">${esc(lastWork(r))}</span>
@@ -804,9 +848,17 @@ function drawWork() {
           <span class="glyph" style="color:${i.color}">${i.glyph}</span>
           <span class="mid">
             <span class="t">${esc(i.title)}</span>
-            <span class="sub"><span class="tag">${esc(i.tag)}</span><em>${esc(i.meta)}</em></span>
+            <span class="sub">
+              <span class="tag">${esc(i.tag)}</span>
+              ${i.revText ? `<span class="rev" style="color:${i.revColor}">${esc(i.revText)}</span>` : ''}
+              ${i.diff ? `<span class="diff">${i.diff}</span>` : ''}
+              <em>${esc(i.meta)}</em>
+            </span>
           </span>
-          <span class="end"><span class="num">${esc(i.num)}</span><span class="repo">${esc(i.repoShort)}</span></span>
+          <span class="end">
+            <span class="n2">${i.ci}<span class="num">${esc(i.num)}</span></span>
+            <span class="repo">${esc(i.repoShort)}</span>
+          </span>
         </a>`).join('') : '<div class="empty">Nothing here.</div>'}`).join('');
 }
 
@@ -937,12 +989,26 @@ async function loadSettingsData() {
 const ghOwner = (o) => ({ login: o.login, avatar_url: o.avatarUrl, type: o.__typename });
 const YEAR_MS = 365 * 86400e3;
 
+// Weekly commit counts have no GraphQL equivalent, so this is one small REST call
+// per visible repo, drawn whenever they all land. GitHub answers 202 with no body
+// while it computes a repo's stats; that repo stays blank until the next refresh.
+function loadSparks(fulls) {
+  const stats = (full) => ghRes(`/repos/${full}/stats/participation`).then((res) => res.json());
+  // a 202 has no body to parse; by the second ask GitHub has usually finished
+  const retried = (full) => stats(full)
+    .catch(() => new Promise((r) => setTimeout(r, 900)).then(() => stats(full)))
+    .catch(() => null);
+  Promise.all(fulls.map(retried))
+    .then((rs) => set({ spark: Object.fromEntries(
+      fulls.map((f, i) => [f, rs[i]?.all]).filter(([, a]) => Array.isArray(a) && a.length > 1)) }));
+}
+
 async function load() {
   const token = pat.value.trim();
   if (!token) return pat.focus();
   localStorage.setItem(TOKEN_KEY, token);
   set({ me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
-        mentions: null, notifs: null, events: {}, err: {}, synced: Date.now() });
+        mentions: null, notifs: null, spark: null, events: {}, err: {}, synced: Date.now() });
 
   // Notifications are the one thing with no GraphQL equivalent, so they stay REST
   // and run alongside rather than blocking the rest of the dashboard.
@@ -972,6 +1038,7 @@ async function load() {
   const repos = repoNodes.map((r) => ({
     full_name: r.nameWithOwner, html_url: r.url, private: r.isPrivate, fork: r.isFork,
     pushed_at: r.pushedAt, owner: ghOwner(r.owner), default_branch: r.defaultBranchRef?.name,
+    language: r.primaryLanguage?.name || '', lang_color: r.primaryLanguage?.color || '#6e7681',
     open_prs: r.openPRs.totalCount, open_issues: r.openIssues.totalCount,
     ci_state: r.defaultBranchRef?.target?.statusCheckRollup?.state,
   }));
@@ -998,6 +1065,8 @@ async function load() {
     me, repos, events, mine,
     assigned: work('assigned'), reviews: work('reviews'), mentions: work('mentions'),
   });
+
+  loadSparks(repos.map((r) => r.full_name));
 
   if (!repos.length) return set({ runs: [] });
 
