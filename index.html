@@ -308,7 +308,7 @@
         <input id="pat" type="password" placeholder="Paste output of: gh auth token" autocomplete="new-password">
         <button id="go" class="chip">Load</button>
       </div>
-      <button id="sync" class="chip" title="Sync now (auto every 5 minutes)">⟳</button>
+      <button id="sync" class="chip" title="Sync now (auto every minute)">⟳</button>
       <button id="cmdk" class="chip" title="Focus the repo filter">⌘K</button>
       <button id="gear" class="chip" title="Settings">⚙</button>
       <!-- points at github.com until the viewer's login is known, then at their profile -->
@@ -441,7 +441,8 @@ const ago = (d) => {
 const S = {
   me: null, repos: null, runs: null,
   mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
-  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, events: {}, spark: null,
+  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, events: {},
+  spark: null, sparkAt: null,
   // GraphQL points and REST calls are separate hourly budgets, tracked apart
   // and reported as the one that is closest to running out
   rate: { pts: null, rest: null },
@@ -1043,7 +1044,7 @@ function loadSparks(fulls) {
     .catch(() => new Promise((r) => setTimeout(r, 900)).then(() => stats(full)))
     .catch(() => null);
   Promise.all(fulls.map(retried))
-    .then((rs) => set({ spark: Object.fromEntries(
+    .then((rs) => set({ sparkAt: Date.now(), spark: Object.fromEntries(
       fulls.map((f, i) => [f, rs[i]?.all]).filter(([, a]) => Array.isArray(a) && a.length > 1)) }));
 }
 
@@ -1059,7 +1060,8 @@ async function load(quiet = false) {
   S.rate = { pts: null, rest: null };
   set(quiet ? { err: {}, synced: Date.now() }
     : { me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
-        mentions: null, notifs: null, spark: null, events: {}, err: {}, synced: Date.now() });
+        mentions: null, notifs: null, spark: null, sparkAt: null, events: {}, err: {},
+        synced: Date.now() });
 
   // Notifications are the one thing with no GraphQL equivalent, so they stay REST
   // and run alongside rather than blocking the rest of the dashboard.
@@ -1118,7 +1120,9 @@ async function load(quiet = false) {
     assigned: work('assigned'), reviews: work('reviews'), mentions: work('mentions'),
   });
 
-  loadSparks(repos.map((r) => r.full_name));
+  // A week-bucketed year of commits cannot move faster than this, and refetching
+  // 25 of them every minute would spend a third of the hourly REST budget.
+  if (!S.sparkAt || Date.now() - S.sparkAt > 36e5) loadSparks(repos.map((r) => r.full_name));
 
   if (!repos.length) return set({ runs: [] });
 
@@ -1145,8 +1149,8 @@ async function load(quiet = false) {
 
 // ---------------------------------------------------------------- events
 
-// One gate for every trigger, so a click during the five-minute tick cannot
-// start a second pass over the same queries.
+// One gate for every trigger, so a click during the minute tick cannot start a
+// second pass over the same queries.
 let syncing = false;
 async function sync(quiet) {
   if (syncing) return;
@@ -1158,7 +1162,7 @@ async function sync(quiet) {
 el('go').onclick = () => sync(false);
 pat.onkeydown = (e) => { if (e.key === 'Enter') sync(false); };
 el('sync').onclick = () => sync(true);
-setInterval(() => { if (pat.value.trim()) sync(true); }, 5 * 60e3);
+setInterval(() => { if (pat.value.trim()) sync(true); }, 60e3);
 el('avatar').onclick = () => { el('auth').hidden = !el('auth').hidden; if (!el('auth').hidden) pat.focus(); };
 el('q').oninput = (e) => set({ q: e.target.value });
 el('sort').onclick = () => set({ sort: S.sort === 'anyone' ? 'mine' : 'anyone' });
