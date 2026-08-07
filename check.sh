@@ -137,6 +137,15 @@ ck('an open PR gets the pull-request octicon', glyph({ isPR: true }), ICON.pr);
 ck('a draft PR gets the draft octicon', glyph({ isPR: true, draft: true }), ICON.prdraft);
 ck('an issue gets the issue octicon', glyph({ isPR: false, labels: [] }), ICON.issue);
 
+S.err = { repos: 'boom' };
+const rowHtml = () => '<div class="row"></div>';
+ck('a failed refresh keeps the rows the panel already had',
+   panel([1], 'repos', rowHtml).includes('class="row"'), true);
+ck('...and says so above them', panel([1], 'repos', rowHtml).includes('last good data'), true);
+ck('an error with nothing behind it still owns the panel',
+   panel(null, 'repos', rowHtml).includes('class="row"'), false);
+S.err = {};
+
 S.rate = { pts: null, rest: null };
 ck('quota is unknown until something answers', quotaLeft(), null);
 spend('pts', 4000, 5000);
@@ -180,9 +189,11 @@ const settled = () => S.spark && PANELS.every((k) => S[k] !== null || S.err[k]);
 (async () => {
   while (!settled()) await new Promise((r) => setTimeout(r, 100));
   const before = (S.repos || []).length;
+  // only panels holding data can lose it; one that errored out is already empty
+  const had = PANELS.filter((k) => S[k] !== null);
   let blanked = '';
   const watch = setInterval(() => {
-    const gone = PANELS.filter((k) => S[k] === null);
+    const gone = had.filter((k) => S[k] === null);
     if (gone.length) blanked = gone.join('+');
   }, 20);
   await sync(true);
