@@ -124,7 +124,8 @@ ck('GraphQL conclusions are lowercased so isFail matches',
    isFail(suitesOf('o/c', forkSuite, 'x')[0]), true);
 
 S.ignore = []; S.q = ''; S.filter = 'all';
-S.events = { 'o/b': '2026-03-01T00:00:00Z' };
+S.events = {};
+bump(S.events, 'o/b', '2026-03-01T00:00:00Z');
 const rs = [{ full_name: 'o/a', pushed_at: '2026-05-01T00:00:00Z' },
             { full_name: 'o/b', pushed_at: '2026-01-01T00:00:00Z' }];
 const order = () => visibleRepos(rs).map((r) => r.full_name).join(',');
@@ -140,11 +141,24 @@ ck('an issue gets the issue octicon', glyph({ isPR: false, labels: [] }), ICON.i
 const ev = {};
 bump(ev, 'o/a', '2026-03-01T00:00:00Z');
 bump(ev, 'o/a', '2026-01-01T00:00:00Z');
-ck('an older sighting never walks my last work backwards', ev['o/a'], '2026-03-01T00:00:00Z');
+ck('an older sighting never walks my last work backwards', ev['o/a'].at, '2026-03-01T00:00:00.000Z');
 bump(ev, 'o/a', '2026-05-01T00:00:00Z');
-ck('a newer one does', ev['o/a'], '2026-05-01T00:00:00Z');
+ck('a newer one does', ev['o/a'].at, '2026-05-01T00:00:00.000Z');
 bump(ev, 'o/b', undefined);
 ck('a source with nothing to say adds no entry', 'o/b' in ev, false);
+
+// the day bucket GitHub stamps for today can land in the future; unguarded it beat
+// the exact commit time and rendered as "now"
+const soon = new Date(Date.now() + 36e5).toISOString();
+const ev2 = {};
+bump(ev2, 'o/a', soon, false);
+ck('a contribution stamped in the future is pulled back to now', ev2['o/a'].when <= Date.now(), true);
+bump(ev2, 'o/a', '2026-01-01T00:00:00Z');
+ck('an exact commit time outranks the day bucket even when older',
+   ev2['o/a'].at, '2026-01-01T00:00:00.000Z');
+bump(ev2, 'o/a', soon, false);
+ck('...and the day bucket cannot take it back', ev2['o/a'].at, '2026-01-01T00:00:00.000Z');
+ck('which matters because ago() renders anything future as now', ago(soon), 'now');
 
 S.err = { repos: 'boom' };
 const rowHtml = () => '<div class="row"></div>';
