@@ -3,8 +3,62 @@
 # Phase 2: E2E — load the real dashboard in headless chromium with a live token.
 set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/index.html"
+BROWSER=${BROWSER:-$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)}
+[ -n "$BROWSER" ] || { echo "no chromium/chrome on PATH; set BROWSER=" >&2; exit 1; }
 DIR=$(mktemp -d)
-trap 'shred -u "$DIR"/* 2>/dev/null; rm -rf "$DIR"' EXIT
+# only the .html copies hold the token; shred chokes on the browser profile dirs
+trap 'shred -u "$DIR"/*.html 2>/dev/null || true; rm -rf "$DIR"' EXIT
+
+# ---------------------------------------------------------------- harness
+# drive <file> <js condition> <timeout ms> — load the page, wait until the
+# condition holds, print the DOM. Node talks CDP directly; nothing to install.
+cat > "$DIR/drive.js" <<'JS'
+const { spawn } = require('node:child_process');
+const fs = require('node:fs'), path = require('node:path');
+const [browser, file, cond, timeout, profile] = process.argv.slice(2);
+
+const send = (() => { let id = 0; return (ws, method, params) => new Promise((ok, no) => {
+  const mine = ++id;
+  ws.addEventListener('message', function on(e) {
+    const m = JSON.parse(e.data);
+    if (m.id !== mine) return;
+    ws.removeEventListener('message', on);
+    m.error ? no(new Error(m.error.message)) : ok(m.result);
+  });
+  ws.send(JSON.stringify({ id: mine, method, params }));
+}); })();
+
+const poll = async (fn, ms) => {
+  for (const end = Date.now() + ms; Date.now() < end;) {
+    const v = await fn().catch(() => null);
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`timed out after ${ms}ms waiting for the page to settle`);
+};
+
+const kid = spawn(browser, ['--headless', '--disable-gpu', '--no-sandbox',
+  '--allow-file-access-from-files', '--remote-debugging-port=0',
+  `--user-data-dir=${profile}`, `file://${path.resolve(file)}`], { stdio: 'ignore' });
+process.on('exit', () => kid.kill());
+
+(async () => {
+  const port = await poll(async () =>
+    fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0], 15000);
+  const page = await poll(async () =>
+    (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page'), 15000);
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener('open', r));
+  const evaluate = async (expression) =>
+    (await send(ws, 'Runtime.evaluate', { expression, returnByValue: true })).result.value;
+  await poll(() => evaluate(cond), +timeout);
+  process.stdout.write(await evaluate('document.documentElement.outerHTML'));
+  kid.kill();
+  process.exit(0);
+})().catch((e) => { kid.kill(); console.error(e.message); process.exit(1); });
+JS
+# a fresh profile per call, so the previous run's DevToolsActivePort can't be read back
+drive() { node "$DIR/drive.js" "$BROWSER" "$1" "$2" "$3" "$(mktemp -d "$DIR/profile.XXXX")"; }
 
 # ---------------------------------------------------------------- phase 1
 # The page makes no requests without a token, so the real functions can be
@@ -78,12 +132,17 @@ S.sort = 'anyone';
 ck('sort by anyone uses pushed_at', order(), 'o/a,o/b');
 S.sort = 'mine';
 ck('sort by me uses my events, unknowns last', order(), 'o/b,o/a');
+const points = (weeks) => sparkline(weeks).match(/points="([^"]+)"/)[1];
+ck('sparkline puts the peak on top and the trough on the baseline',
+   points([0, 5, 0]), '0.0,17.0 36.0,1.0 72.0,17.0');
+ck('a repo with no commits flat-lines instead of dividing by zero',
+   points([0, 0, 0]), '0.0,17.0 36.0,17.0 72.0,17.0');
+
 document.title = 'UNIT ' + out.join(' @@ ');
 </script>""")
 UNIT
 
-chromium --headless --disable-gpu --no-sandbox --virtual-time-budget=4000 \
-  --dump-dom "$DIR/unit.html" 2>/dev/null \
+drive "$DIR/unit.html" "document.title.startsWith('UNIT')" 10000 \
   | grep -o '<title>UNIT[^<]*' | sed 's/<title>UNIT //' | tr '@' '\n' | grep -v '^$'
 echo
 
@@ -99,8 +158,12 @@ assert needle in html, "injection point not found"
 open(dst, "w").write(html.replace(needle, f"pat.value = {tok!r};"))
 PY
 
-chromium --headless --disable-gpu --no-sandbox --allow-file-access-from-files \
-  --virtual-time-budget=45000 --dump-dom "$DIR/t.html" 2>/dev/null > "$DIR/dom.html"
+# Wait for every panel to settle rather than for a wall-clock budget: --dump-dom
+# on its own snapshots the page mid-flight and reports the pending fetches as
+# errors, which made the whole phase a race against GitHub's latency.
+drive "$DIR/t.html" \
+  "S.spark && ['repos','runs','mine','assigned','reviews','mentions','notifs'].every((k) => S[k] !== null || S.err[k])" \
+  60000 > "$DIR/dom.html"
 
 python3 - "$DIR/dom.html" "$TOKEN" <<'PY'
 import re, sys
@@ -122,7 +185,9 @@ for sid in ["blocking","repos","work","runs","feed"]:
         # a row with no CI icon and a "—" count means the per-repo fan-out never landed
         extra = (f'  ci_unknown={len(re.findall(r"class=.ci.></span", b))}/{rows}'
                  f'  counts_pending={len(re.findall(r"class=.counts.>—<", b))}/{rows}'
-                 f'  avatars={len(re.findall(chr(34)+"oav", b))}/{rows}')
+                 f'  avatars={len(re.findall(chr(34)+"oav", b))}/{rows}'
+                 f'  langs={len(re.findall(r"class=.lang.><i", b))}/{rows}'
+                 f'  sparks={len(re.findall(r"class=.spark.", b))}/{rows}')
     if sid == 'blocking':
         extra = f'  filled={len(re.findall(r"class=.row bcard", b))}/4'
     # the blocking strip is a bare grid with no header, so it has no count span
