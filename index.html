@@ -426,6 +426,8 @@ function toggleIgnore(key) {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
 
+// A future timestamp falls through every threshold to 'now', so nothing upstream
+// may hand this a time that has not happened yet.
 const ago = (d) => {
   const s = (Date.now() - new Date(d)) / 1000;
   for (const [n, u] of [[31536000,'y'],[2592000,'mo'],[604800,'w'],[86400,'d'],[3600,'h'],[60,'m']])
@@ -692,11 +694,19 @@ function decorate(r, broken) {
   };
 }
 
-// "When did I last work here" arrives from three sources of differing precision,
-// so every one of them only ever moves the timestamp forward.
-const bump = (map, full, at) => {
-  if (at && (!map[full] || new Date(at) > new Date(map[full]))) map[full] = at;
+// "When did I last work here" arrives from three sources of differing precision.
+// A commit time is exact. A contribution is a whole day, stamped at the day
+// boundary in the account's timezone, which can sit in the future — left to
+// compete on recency it beat the real commit time and read as "now". So an exact
+// reading always wins, and the coarse one only fills a gap, never beating the clock.
+const bump = (map, full, at, exact = true) => {
+  if (!at) return;
+  const when = exact ? +new Date(at) : Math.min(+new Date(at), Date.now());
+  const prev = map[full];
+  if (prev && (prev.exact > exact || (prev.exact === exact && when <= prev.when))) return;
+  map[full] = { when, exact, at: new Date(when).toISOString() };
 };
+const workedAt = (full) => S.events[full]?.at;
 
 const myRepoNames = () => new Set((vWork('mine') || []).map((i) => i.repo));
 
@@ -826,13 +836,11 @@ function drawBlocking() {
 }
 
 const SORT_LABEL = { anyone: 'last work by anyone', mine: 'last work by me' };
-// S.events maps repo -> when I last worked there; 0 sorts unknowns last. Two
-// sources: contributionsCollection covers a year across all branches but buckets
-// by day, and the default-branch commits already fetched for the Actions feed give
-// an exact time when one of them is mine. Newer of the two wins.
-const myWork = (r) => S.events[r.full_name] ? +new Date(S.events[r.full_name]) : 0;
+// S.events maps repo -> when I last worked there, filled by bump() from three
+// sources of differing precision; 0 sorts unknowns last.
+const myWork = (r) => S.events[r.full_name]?.when || 0;
 const lastWork = (r) => S.sort === 'mine'
-  ? (myWork(r) ? ago(S.events[r.full_name]) : '—')
+  ? (myWork(r) ? ago(workedAt(r.full_name)) : '—')
   : ago(r.pushed_at);
 
 // A year of weekly commit counts as one polyline. Flat-lines a repo with no
@@ -1103,10 +1111,10 @@ async function load(quiet = false) {
     ci_state: r.defaultBranchRef?.target?.statusCheckRollup?.state,
   }));
 
-  // day-bucketed contributions across every branch, refined below where possible
+  // day-bucketed contributions, the coarsest source, refined below where possible
   const events = {};
   for (const c of v.contributionsCollection?.commitContributionsByRepository || []) {
-    bump(events, c.repository.nameWithOwner, c.contributions?.nodes?.[0]?.occurredAt);
+    bump(events, c.repository.nameWithOwner, c.contributions?.nodes?.[0]?.occurredAt, false);
   }
 
   const work = (key) => (d[key]?.nodes || []).map(normWork).filter(Boolean);
