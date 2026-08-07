@@ -611,7 +611,7 @@ query($from: DateTime!, $to: DateTime!) {
   }
   mine:     search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: 25) {
     nodes { ${WORK_FIELDS}
-      ... on PullRequest { commits(last: 1) { nodes { commit { oid ${SUITE_FIELDS} } } } }
+      ... on PullRequest { commits(last: 1) { nodes { commit { oid committedDate ${SUITE_FIELDS} } } } }
     } }
   assigned: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
   reviews:  search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
@@ -691,6 +691,12 @@ function decorate(r, broken) {
     stale: Date.now() - new Date(r.pushed_at) > STALE_MS,
   };
 }
+
+// "When did I last work here" arrives from three sources of differing precision,
+// so every one of them only ever moves the timestamp forward.
+const bump = (map, full, at) => {
+  if (at && (!map[full] || new Date(at) > new Date(map[full]))) map[full] = at;
+};
 
 const myRepoNames = () => new Set((vWork('mine') || []).map((i) => i.repo));
 
@@ -1100,8 +1106,7 @@ async function load(quiet = false) {
   // day-bucketed contributions across every branch, refined below where possible
   const events = {};
   for (const c of v.contributionsCollection?.commitContributionsByRepository || []) {
-    const at = c.contributions?.nodes?.[0]?.occurredAt;
-    if (at) events[c.repository.nameWithOwner] = at;
+    bump(events, c.repository.nameWithOwner, c.contributions?.nodes?.[0]?.occurredAt);
   }
 
   const work = (key) => (d[key]?.nodes || []).map(normWork).filter(Boolean);
@@ -1112,7 +1117,12 @@ async function load(quiet = false) {
   for (const n of d.mine?.nodes || []) {
     const full = n.repository?.nameWithOwner;
     const commit = n.commits?.nodes?.[0]?.commit;
-    if (full && commit && !ignored(full)) prRuns.push(...suitesOf(full, commit, n.headRefName));
+    if (!full || !commit || ignored(full)) continue;
+    prRuns.push(...suitesOf(full, commit, n.headRefName));
+    // The head of a PR I opened is work of mine wherever it sits. Neither of the
+    // other two sources can see it: contributions only count the default branch,
+    // and an unlinked commit email leaves the author unattributed in both.
+    bump(events, full, commit.committedDate);
   }
 
   set({
@@ -1137,10 +1147,7 @@ async function load(quiet = false) {
       for (const c of node.defaultBranchRef?.target?.history?.nodes || []) {
         runs.push(...suitesOf(node.nameWithOwner, c));
         // an exact commit time beats the day-bucketed contribution when it is mine
-        if (c.author?.user?.login === v.login) {
-          const prev = events2[node.nameWithOwner];
-          if (!prev || new Date(c.committedDate) > new Date(prev)) events2[node.nameWithOwner] = c.committedDate;
-        }
+        if (c.author?.user?.login === v.login) bump(events2, node.nameWithOwner, c.committedDate);
       }
     }
     set({ events: events2, runs: runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });

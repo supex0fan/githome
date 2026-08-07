@@ -137,6 +137,15 @@ ck('an open PR gets the pull-request octicon', glyph({ isPR: true }), ICON.pr);
 ck('a draft PR gets the draft octicon', glyph({ isPR: true, draft: true }), ICON.prdraft);
 ck('an issue gets the issue octicon', glyph({ isPR: false, labels: [] }), ICON.issue);
 
+const ev = {};
+bump(ev, 'o/a', '2026-03-01T00:00:00Z');
+bump(ev, 'o/a', '2026-01-01T00:00:00Z');
+ck('an older sighting never walks my last work backwards', ev['o/a'], '2026-03-01T00:00:00Z');
+bump(ev, 'o/a', '2026-05-01T00:00:00Z');
+ck('a newer one does', ev['o/a'], '2026-05-01T00:00:00Z');
+bump(ev, 'o/b', undefined);
+ck('a source with nothing to say adds no entry', 'o/b' in ev, false);
+
 S.err = { repos: 'boom' };
 const rowHtml = () => '<div class="row"></div>';
 ck('a failed refresh keeps the rows the panel already had',
