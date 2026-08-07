@@ -160,15 +160,36 @@ src, dst, tok = sys.argv[1], sys.argv[2], sys.argv[3]
 html = open(src).read()
 needle = "pat.value = localStorage.getItem(TOKEN_KEY) || '';"
 assert needle in html, "injection point not found"
-open(dst, "w").write(html.replace(needle, f"pat.value = {tok!r};"))
+# Once the first load settles, run a second one the way the five-minute timer
+# does and watch for a panel going empty. The DOM below is the one left after
+# that quiet sync, so the row counts also have to survive it.
+probe = """
+<script>
+const PANELS = ['repos', 'runs', 'mine', 'assigned', 'reviews', 'mentions', 'notifs'];
+const settled = () => S.spark && PANELS.every((k) => S[k] !== null || S.err[k]);
+(async () => {
+  while (!settled()) await new Promise((r) => setTimeout(r, 100));
+  const before = (S.repos || []).length;
+  let blanked = '';
+  const watch = setInterval(() => {
+    const gone = PANELS.filter((k) => S[k] === null);
+    if (gone.length) blanked = gone.join('+');
+  }, 20);
+  await sync(true);
+  while (!settled()) await new Promise((r) => setTimeout(r, 100));
+  clearInterval(watch);
+  document.title = 'QUIET ' + (blanked ? 'FAIL ' + blanked + ' blanked'
+    : (S.repos || []).length >= before ? 'ok' : 'FAIL lost rows');
+})();
+</script>"""
+open(dst, "w").write(html.replace(needle, f"pat.value = {tok!r};") + probe)
 PY
 
 # Wait for every panel to settle rather than for a wall-clock budget: --dump-dom
 # on its own snapshots the page mid-flight and reports the pending fetches as
 # errors, which made the whole phase a race against GitHub's latency.
-drive "$DIR/t.html" \
-  "S.spark && ['repos','runs','mine','assigned','reviews','mentions','notifs'].every((k) => S[k] !== null || S.err[k])" \
-  60000 > "$DIR/dom.html"
+drive "$DIR/t.html" "document.title.startsWith('QUIET')" 120000 > "$DIR/dom.html"
+grep -o '<title>QUIET[^<]*' "$DIR/dom.html" | sed 's/<title>QUIET /quiet sync: /'
 
 python3 - "$DIR/dom.html" "$TOKEN" <<'PY'
 import re, sys
@@ -203,4 +224,6 @@ for sid in ["blocking","repos","work","runs","feed"]:
 head = dom.split('<section id="blocking"')[0]
 pills = re.findall(r'class="pill">.*?</i>([^<]*)<', head, re.S)
 print(f'pills    {pills if pills else "MISSING"}')
+sync = re.search(r'id="synced"[^>]*>([^<]*)<', head)
+print(f'header   {sync.group(1).strip() if sync else "SYNCED SPAN GONE"}')
 PY
