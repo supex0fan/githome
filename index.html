@@ -439,13 +439,27 @@ const S = {
   me: null, repos: null, runs: null,
   mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
   err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, events: {}, spark: null,
-  // separate hourly budgets; one field for both made the header flicker between
-  // two unrelated numbers as GraphQL and REST responses interleaved
+  // GraphQL points and REST calls are separate hourly budgets, tracked apart
+  // and reported as the one that is closest to running out
   rate: { pts: null, rest: null },
   ignore: stored.ignore ?? ['QUT-Motorsport'], dismissed: stored.dismissed ?? [],
   orgs: null, allRepos: null,
 };
 const set = (patch) => { Object.assign(S, patch); draw(); };
+
+// Responses land out of order, so a budget only ever moves down within a sync;
+// load() clears both so an hourly reset still shows through.
+const spend = (kind, left, max) => {
+  if (!(max > 0)) return;
+  if (!S.rate[kind] || left < S.rate[kind].left) S.rate[kind] = { left, max };
+};
+
+// One number for two budgets: the fraction left of whichever is closest to
+// running out, since that is the one that will stop the page working.
+const quotaLeft = () => {
+  const fractions = [S.rate.pts, S.rate.rest].filter(Boolean).map((b) => b.left / b.max);
+  return fractions.length ? Math.min(...fractions) : null;
+};
 const failed = (key, e) => set({ err: { ...S.err, [key]: e.message } });
 
 // ---------------------------------------------------------------- api
@@ -457,7 +471,7 @@ async function ghRes(path) {
   // leaves a panel showing an error it will never retry out of
   const res = await fetch(url, opts).catch(() => fetch(url, opts));
   const remaining = res.headers.get('x-ratelimit-remaining');
-  if (remaining) S.rate.rest = Math.min(S.rate.rest ?? Infinity, +remaining);
+  if (remaining) spend('rest', +remaining, +res.headers.get('x-ratelimit-limit'));
   if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value (a password or expired token gives this).');
   if (res.status === 403 && remaining === '0') throw new Error('403 — rate limit exhausted, wait for the reset.');
   return res;
@@ -482,7 +496,7 @@ async function gqlOnce(query, variables) {
   if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value.');
   if (res.status >= 500) throw new Error(`${res.status} — GitHub timed out on the query. Retrying.`);
   const body = await res.json().catch(() => ({}));
-  if (body.data?.rateLimit) S.rate.pts = Math.min(S.rate.pts ?? Infinity, body.data.rateLimit.remaining);
+  if (body.data?.rateLimit) spend('pts', body.data.rateLimit.remaining, body.data.rateLimit.limit);
   if (!body.data) throw new Error(body.errors?.[0]?.message || `${res.status} ${res.statusText}`);
   if (body.errors?.length) console.warn('graphql partial errors', body.errors);
   return body.data;
@@ -555,7 +569,7 @@ const normWork = (n) => n && n.repository ? {
 // Aliased per repo so only the repos on screen are walked. 25 repos x 5 commits
 // stays well inside the server's budget; 50 x 6 in one query got a 502.
 const runsQuery = (fulls) => `query {
-  rateLimit { cost remaining }
+  rateLimit { cost limit remaining }
 ${fulls.map((f, i) => {
   const [o, n] = f.split('/');
   return `  r${i}: repository(owner: ${JSON.stringify(o)}, name: ${JSON.stringify(n)}) {
@@ -569,7 +583,7 @@ ${fulls.map((f, i) => {
 
 const DASH_QUERY = `
 query($from: DateTime!, $to: DateTime!) {
-  rateLimit { cost remaining }
+  rateLimit { cost limit remaining }
   viewer {
     login avatarUrl
     contributionsCollection(from: $from, to: $to) {
@@ -961,11 +975,14 @@ function drawSettings() {
 const drawSynced = () => {
   if (!S.synced) return;
   const since = ago(S.synced);
+  const left = quotaLeft();
+  // floor, so a budget that is merely close to full never reads as untouched
   el('synced').textContent = [
-    S.rate.pts == null ? null : `${S.rate.pts} pts`,
-    S.rate.rest == null ? null : `${S.rate.rest} rest`,
+    left == null ? null : `${Math.floor(left * 100)}% quota`,
     since === 'now' ? 'synced just now' : `synced ${since} ago`,
   ].filter(Boolean).join(' · ');
+  el('synced').title = [['pts', S.rate.pts], ['REST', S.rate.rest]]
+    .filter(([, b]) => b).map(([n, b]) => `${b.left}/${b.max} ${n}`).join(' · ');
 };
 
 function draw() {
@@ -977,7 +994,7 @@ function draw() {
 // ponytail: 5 pages is 500 repos — raise the cap if anyone actually hits it.
 const ALL_REPOS_QUERY = `
 query($cursor: String) {
-  rateLimit { cost remaining }
+  rateLimit { cost limit remaining }
   viewer {
     organizations(first: 100) { nodes { login avatarUrl __typename } }
     repositories(first: 100, after: $cursor, orderBy: {field: NAME, direction: ASC},

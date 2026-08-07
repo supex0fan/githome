@@ -137,6 +137,16 @@ ck('an open PR gets the pull-request octicon', glyph({ isPR: true }), ICON.pr);
 ck('a draft PR gets the draft octicon', glyph({ isPR: true, draft: true }), ICON.prdraft);
 ck('an issue gets the issue octicon', glyph({ isPR: false, labels: [] }), ICON.issue);
 
+S.rate = { pts: null, rest: null };
+ck('quota is unknown until something answers', quotaLeft(), null);
+spend('pts', 4000, 5000);
+spend('rest', 2500, 5000);
+ck('quota reports the budget closest to running out', quotaLeft(), 0.5);
+spend('rest', 4900, 5000);
+ck('a late high reading cannot walk a budget back up', S.rate.rest.left, 2500);
+spend('pts', 10, 0);
+ck('a missing limit is ignored rather than dividing by zero', quotaLeft(), 0.5);
+
 const points = (weeks) => sparkline(weeks).match(/points="([^"]+)"/)[1];
 ck('sparkline puts the peak on top and the trough on the baseline',
    points([0, 5, 0]), '0.0,17.0 36.0,1.0 72.0,17.0');
