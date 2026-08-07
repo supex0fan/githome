@@ -48,7 +48,9 @@
   }
   .chip { padding: 3px 8px; border: 1px solid #30363d; border-radius: 4px; }
   button.chip { background: none; color: inherit; font: inherit; cursor: pointer; }
-  button.chip:hover { border-color: #2f81f7; color: #e6edf3; }
+  button.chip:hover, a.chip:hover { border-color: #2f81f7; color: #e6edf3; }
+  button.chip.busy { opacity: 0.45; pointer-events: none; }
+  a.chip { display: flex; align-items: center; color: #8b949e; }
   #avatar { width: 24px; height: 24px; border-radius: 50%; background: #30363d; cursor: pointer; }
   #auth { display: flex; gap: 8px; align-items: center; }
   #auth[hidden] { display: none; }
@@ -303,8 +305,11 @@
         <input id="pat" type="password" placeholder="Paste output of: gh auth token" autocomplete="new-password">
         <button id="go" class="chip">Load</button>
       </div>
+      <button id="sync" class="chip" title="Sync now (auto every 5 minutes)">⟳</button>
       <button id="cmdk" class="chip" title="Focus the repo filter">⌘K</button>
       <button id="gear" class="chip" title="Settings">⚙</button>
+      <!-- points at github.com until the viewer's login is known, then at their profile -->
+      <a id="ghhome" class="chip" href="https://github.com" target="_blank" rel="noopener" title="Open GitHub"></a>
       <img id="avatar" alt="" hidden>
     </div>
   </header>
@@ -377,6 +382,7 @@ const ICON = {
   pr: 'M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z',
   prdraft: 'M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 14a2.25 2.25 0 1 1 0-4.5 2.25 2.25 0 0 1 0 4.5ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM14 7.5a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm0-4.25a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z',
   issue: 'M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z',
+  github: 'M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656',
 };
 const svg = (name, color, size = 14) =>
   `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 16 16" style="color:${color}"><path fill-rule="evenodd" d="${ICON[name]}"/></svg>`;
@@ -432,7 +438,10 @@ const ago = (d) => {
 const S = {
   me: null, repos: null, runs: null,
   mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
-  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, rate: '', events: {}, spark: null,
+  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, events: {}, spark: null,
+  // separate hourly budgets; one field for both made the header flicker between
+  // two unrelated numbers as GraphQL and REST responses interleaved
+  rate: { pts: null, rest: null },
   ignore: stored.ignore ?? ['QUT-Motorsport'], dismissed: stored.dismissed ?? [],
   orgs: null, allRepos: null,
 };
@@ -448,7 +457,7 @@ async function ghRes(path) {
   // leaves a panel showing an error it will never retry out of
   const res = await fetch(url, opts).catch(() => fetch(url, opts));
   const remaining = res.headers.get('x-ratelimit-remaining');
-  if (remaining) S.rate = `${remaining} left`;
+  if (remaining) S.rate.rest = Math.min(S.rate.rest ?? Infinity, +remaining);
   if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value (a password or expired token gives this).');
   if (res.status === 403 && remaining === '0') throw new Error('403 — rate limit exhausted, wait for the reset.');
   return res;
@@ -473,7 +482,7 @@ async function gqlOnce(query, variables) {
   if (res.status === 401) throw new Error('401 — token rejected. Run `gh auth token` and paste that value.');
   if (res.status >= 500) throw new Error(`${res.status} — GitHub timed out on the query. Retrying.`);
   const body = await res.json().catch(() => ({}));
-  if (body.data?.rateLimit) S.rate = `${body.data.rateLimit.remaining} pts`;
+  if (body.data?.rateLimit) S.rate.pts = Math.min(S.rate.pts ?? Infinity, body.data.rateLimit.remaining);
   if (!body.data) throw new Error(body.errors?.[0]?.message || `${res.status} ${res.statusText}`);
   if (body.errors?.length) console.warn('graphql partial errors', body.errors);
   return body.data;
@@ -952,8 +961,11 @@ function drawSettings() {
 const drawSynced = () => {
   if (!S.synced) return;
   const since = ago(S.synced);
-  el('synced').textContent =
-    [S.rate, since === 'now' ? 'synced just now' : `synced ${since} ago`].filter(Boolean).join(' · ');
+  el('synced').textContent = [
+    S.rate.pts == null ? null : `${S.rate.pts} pts`,
+    S.rate.rest == null ? null : `${S.rate.rest} rest`,
+    since === 'now' ? 'synced just now' : `synced ${since} ago`,
+  ].filter(Boolean).join(' · ');
 };
 
 function draw() {
@@ -1013,11 +1025,18 @@ function loadSparks(fulls) {
       fulls.map((f, i) => [f, rs[i]?.all]).filter(([, a]) => Array.isArray(a) && a.length > 1)) }));
 }
 
-async function load() {
+// A quiet load leaves the panels showing what they already have and swaps each
+// one out as its data lands, so a refresh never blanks the page you are reading.
+// Errors always clear, or a panel that has recovered would keep its red.
+async function load(quiet = false) {
   const token = pat.value.trim();
   if (!token) return pat.focus();
   localStorage.setItem(TOKEN_KEY, token);
-  set({ me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
+  // Both counters only ever move down within a sync, whatever order the responses
+  // land in, and start over each sync so an hourly reset still shows through.
+  S.rate = { pts: null, rest: null };
+  set(quiet ? { err: {}, synced: Date.now() }
+    : { me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
         mentions: null, notifs: null, spark: null, events: {}, err: {}, synced: Date.now() });
 
   // Notifications are the one thing with no GraphQL equivalent, so they stay REST
@@ -1040,6 +1059,7 @@ async function load() {
   const me = { login: v.login, avatar_url: v.avatarUrl };
   el('avatar').src = me.avatar_url;
   el('avatar').hidden = false;
+  el('ghhome').href = `https://github.com/${me.login}`;
   el('auth').hidden = true;
 
   // over-fetch, then drop ignored repos, so the list stays full instead of shrinking
@@ -1103,8 +1123,20 @@ async function load() {
 
 // ---------------------------------------------------------------- events
 
-el('go').onclick = load;
-pat.onkeydown = (e) => { if (e.key === 'Enter') load(); };
+// One gate for every trigger, so a click during the five-minute tick cannot
+// start a second pass over the same queries.
+let syncing = false;
+async function sync(quiet) {
+  if (syncing) return;
+  syncing = true;
+  el('sync').classList.add('busy');
+  try { await load(quiet); } finally { syncing = false; el('sync').classList.remove('busy'); }
+}
+
+el('go').onclick = () => sync(false);
+pat.onkeydown = (e) => { if (e.key === 'Enter') sync(false); };
+el('sync').onclick = () => sync(true);
+setInterval(() => { if (pat.value.trim()) sync(true); }, 5 * 60e3);
 el('avatar').onclick = () => { el('auth').hidden = !el('auth').hidden; if (!el('auth').hidden) pat.focus(); };
 el('q').oninput = (e) => set({ q: e.target.value });
 el('sort').onclick = () => set({ sort: S.sort === 'anyone' ? 'mine' : 'anyone' });
@@ -1148,7 +1180,7 @@ el('restore').onclick = () => {
 dlg.onclose = () => {
   if (dlg.returnValue !== 'save') { S.ignore = ignoreSnapshot; return; }
   saveSettings();
-  load();                      // ignored repos are skipped at fetch time, so refetch
+  sync(false);                 // ignored repos are skipped at fetch time, so refetch
 };
 
 const focusFilter = () => { el('q').focus(); el('q').select(); };
@@ -1179,7 +1211,8 @@ el('markread').onclick = async () => {
 
 setInterval(drawSynced, 10000);
 
+el('ghhome').innerHTML = svg('github', 'currentColor', 16);
 draw();
 pat.value = localStorage.getItem(TOKEN_KEY) || '';
-if (pat.value) load(); else pat.focus();
+if (pat.value) sync(false); else pat.focus();
 </script>
