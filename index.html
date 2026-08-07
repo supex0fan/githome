@@ -2,6 +2,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GitHub Dashboard</title>
+<!-- the repo rows' sparkline, inline so the page stays one file -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Crect x='.5' y='.5' width='31' height='31' rx='6.5' fill='none' stroke='%2330363d'/%3E%3Cpath d='M5 21 11 15 15 23 19 7 27 18' fill='none' stroke='%233fb950' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -124,6 +126,7 @@
   .list { flex: 1; min-height: 0; overflow-y: auto; }
   .empty, .err { padding: 16px; font-family: var(--mono); font-size: 12.5px; color: #8b949e; }
   .err { color: var(--red); line-height: 1.6; }
+  .err.stale { padding: 6px 16px; font-size: 12px; border-bottom: 1px solid #30363d; }
 
   /* repositories */
   .rtools { flex: none; display: flex; flex-direction: column; gap: 9px; padding: 11px 16px 10px; border-bottom: 1px solid #30363d; }
@@ -774,12 +777,14 @@ const count = (id, text, color) => {
 };
 
 // Panels resolve at their own pace, so each one owns three states: an error it
-// hit, the data it got, or the fact that it is still in flight.
+// hit, the data it got, or the fact that it is still in flight. An error only
+// takes the panel over when there is nothing to show; once a panel has rows, a
+// failed refresh says so above them rather than throwing them away.
 const panel = (data, key, rows) =>
-  S.err[key] ? `<div class="err">${esc(S.err[key])}</div>`
-  : data == null ? '<div class="empty">Loading…</div>'
-  : !data.length ? '<div class="empty">Nothing here.</div>'
-  : rows(data);
+  data == null
+    ? (S.err[key] ? `<div class="err">${esc(S.err[key])}</div>` : '<div class="empty">Loading…</div>')
+    : (S.err[key] ? `<div class="err stale">${esc(S.err[key])} · showing the last good data</div>` : '')
+      + (data.length ? rows(data) : '<div class="empty">Nothing here.</div>');
 
 const drawPills = () => {
   const blocking = blockingCards().length;
