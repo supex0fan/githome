@@ -443,8 +443,15 @@ const ago = (d) => {
 const S = {
   me: null, repos: null, runs: null,
   mine: null, assigned: null, reviews: null, mentions: null, notifs: null,
-  err: {}, q: '', filter: 'all', sort: 'anyone', synced: null, events: {},
+  err: {}, q: '', filter: 'all', sort: 'anyone', events: {},
   spark: null, sparkAt: null,
+  // `runs` and `events` are each stitched from sources that arrive on different
+  // clocks, so the parts are kept apart and merged on every landing; either half
+  // can refresh without discarding the other.
+  prRuns: null, branchRuns: null,
+  evContrib: null, evPR: null, evCommit: null,
+  // when each clock last landed, so returning to the tab can tell what is stale
+  workAt: 0, reposAt: 0, notifMod: null,
   // GraphQL points and REST calls are separate hourly budgets, tracked apart
   // and reported as the one that is closest to running out
   rate: { pts: null, rest: null },
@@ -453,8 +460,8 @@ const S = {
 };
 const set = (patch) => { Object.assign(S, patch); draw(); };
 
-// Responses land out of order, so a budget only ever moves down within a sync;
-// load() clears both so an hourly reset still shows through.
+// Responses land out of order, so a budget only ever moves down within a pass;
+// sync() clears both so an hourly reset still shows through.
 const spend = (kind, left, max) => {
   if (!(max > 0)) return;
   if (!S.rate[kind] || left < S.rate[kind].left) S.rate[kind] = { left, max };
@@ -467,12 +474,19 @@ const quotaLeft = () => {
   return fractions.length ? Math.min(...fractions) : null;
 };
 const failed = (key, e) => set({ err: { ...S.err, [key]: e.message } });
+// A panel that has recovered must not keep its red, and now that the panels
+// refresh on separate clocks each one can only speak for its own keys.
+const cleared = (...keys) => {
+  const err = { ...S.err };
+  for (const k of keys) delete err[k];
+  return err;
+};
 
 // ---------------------------------------------------------------- api
 
-async function ghRes(path) {
+async function ghRes(path, extra) {
   const url = path.startsWith('http') ? path : `https://api.github.com${path}`;
-  const opts = { headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json' } };
+  const opts = { headers: { Authorization: `Bearer ${pat.value.trim()}`, Accept: 'application/vnd.github+json', ...extra } };
   // a network change cancels everything in flight, and one dropped call otherwise
   // leaves a panel showing an error it will never retry out of
   const res = await fetch(url, opts).catch(() => fetch(url, opts));
@@ -587,7 +601,27 @@ ${fulls.map((f, i) => {
 }).join('\n')}
 }`;
 
-const DASH_QUERY = `
+// Two queries rather than one, split along how fast their answers go stale.
+// The four searches come back in about two seconds and change minute to minute,
+// so they run on their own quick clock. The repo list is the slowest thing on
+// the page: the open counts and the CI rollup cost roughly a second and a half
+// each across 50 repos, and it barely moves, so it stays on the minute.
+const WORK_QUERY = `
+query {
+  rateLimit { cost limit remaining }
+  mine:     search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: 25) {
+    nodes { ${WORK_FIELDS}
+      ... on PullRequest { commits(last: 1) { nodes { commit { oid committedDate ${SUITE_FIELDS} } } } }
+    } }
+  assigned: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+  reviews:  search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+  mentions: search(query: "is:open mentions:@me -author:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
+}`;
+
+// 50 rather than the 25 on screen, so the list stays full after the ignore rules
+// drop rows. An owner rule can hide any number of repos, so the over-fetch cannot
+// be sized exactly, and it is off the critical path now anyway.
+const REPOS_QUERY = `
 query($from: DateTime!, $to: DateTime!) {
   rateLimit { cost limit remaining }
   viewer {
@@ -611,13 +645,6 @@ query($from: DateTime!, $to: DateTime!) {
       }
     }
   }
-  mine:     search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: 25) {
-    nodes { ${WORK_FIELDS}
-      ... on PullRequest { commits(last: 1) { nodes { commit { oid committedDate ${SUITE_FIELDS} } } } }
-    } }
-  assigned: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
-  reviews:  search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
-  mentions: search(query: "is:open mentions:@me -author:@me archived:false", type: ISSUE, first: 25) { nodes { ${WORK_FIELDS} } }
 }`;
 
 // ---------------------------------------------------------------- derive
@@ -993,8 +1020,11 @@ function drawSettings() {
 }
 
 const drawSynced = () => {
-  if (!S.synced) return;
-  const since = ago(S.synced);
+  // The two clocks land at different times, so the honest number is the staler of
+  // them; claiming "just now" while the repo column is a minute old would be a lie.
+  const synced = Math.min(S.workAt, S.reposAt);
+  if (!synced) return;
+  const since = ago(synced);
   const left = quotaLeft();
   // floor, so a budget that is merely close to full never reads as untouched
   el('synced').textContent = [
@@ -1062,36 +1092,85 @@ function loadSparks(fulls) {
       fulls.map((f, i) => [f, rs[i]?.all]).filter(([, a]) => Array.isArray(a) && a.length > 1)) }));
 }
 
-// A quiet load leaves the panels showing what they already have and swaps each
-// one out as its data lands, so a refresh never blanks the page you are reading.
-// Errors always clear, or a panel that has recovered would keep its red.
-async function load(quiet = false) {
-  const token = pat.value.trim();
-  if (!token) return pat.focus();
-  localStorage.setItem(TOKEN_KEY, token);
-  // Both counters only ever move down within a sync, whatever order the responses
-  // land in, and start over each sync so an hourly reset still shows through.
-  S.rate = { pts: null, rest: null };
-  set(quiet ? { err: {}, synced: Date.now() }
-    : { me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
-        mentions: null, notifs: null, spark: null, sparkAt: null, events: {}, err: {},
-        synced: Date.now() });
+// Both halves of each stitched panel are merged from scratch on every landing
+// rather than accumulated in place. bump() lets an exact time beat a day-bucketed
+// one, so a map mutated across syncs would keep yesterday's exact timestamp over
+// today's bucket and the repo would stop moving.
+// Null until both halves have landed once, never after. "Still loading" has to
+// mean the picture has never been complete, or the panel resolves on the PR half
+// alone and the blocking strip says "nothing blocking" a beat before the red
+// card it already knows about arrives.
+const allRuns = () => (S.prRuns && S.branchRuns)
+  ? [...S.prRuns, ...S.branchRuns].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  : null;
 
-  // Notifications are the one thing with no GraphQL equivalent, so they stay REST
-  // and run alongside rather than blocking the rest of the dashboard.
-  gh('/notifications?per_page=30').then((notifs) => set({ notifs }), (e) => failed('notifs', e));
+const allEvents = () => {
+  const out = {};
+  for (const src of [S.evContrib, S.evPR, S.evCommit])
+    for (const [full, e] of Object.entries(src || {})) bump(out, full, e.at, e.exact);
+  return out;
+};
 
+// A failed token is the one error worth interrupting for; everything else leaves
+// the panels showing the last good data with the reason above them.
+const authFailed = (e) => { if (/^401/.test(e.message)) el('auth').hidden = false; };
+
+// Notifications are the one thing with no GraphQL equivalent, so they stay REST.
+// GitHub answers a conditional request with 304 and no rate-limit charge when
+// nothing has changed, which is what makes polling these cheaply worth doing.
+async function loadNotifs() {
+  try {
+    const res = await ghRes('/notifications?per_page=30', S.notifMod && { 'If-Modified-Since': S.notifMod });
+    if (res.status === 304) return set({ err: cleared('notifs') });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.json().catch(() => ({}))).message || res.statusText}`);
+    S.notifMod = res.headers.get('last-modified');
+    set({ notifs: await res.json(), err: cleared('notifs') });
+  } catch (e) { failed('notifs', e); }
+}
+
+// The fast clock: four searches, about two seconds, carrying everything that
+// actually changes while you are looking at the page.
+async function loadWork() {
+  let d;
+  try { d = await gql(WORK_QUERY); }
+  catch (e) {
+    for (const k of ['mine', 'assigned', 'reviews', 'mentions']) failed(k, e);
+    return authFailed(e);
+  }
+  const work = (key) => (d[key]?.nodes || []).map(normWork).filter(Boolean);
+
+  // CI on my own PR branches, which default-branch history never sees
+  const prRuns = [], evPR = {};
+  for (const n of d.mine?.nodes || []) {
+    const full = n.repository?.nameWithOwner;
+    const commit = n.commits?.nodes?.[0]?.commit;
+    if (!full || !commit || ignored(full)) continue;
+    prRuns.push(...suitesOf(full, commit, n.headRefName));
+    // The head of a PR I opened is work of mine wherever it sits. Neither of the
+    // other two sources can see it: contributions only count the default branch,
+    // and an unlinked commit email leaves the author unattributed in both.
+    bump(evPR, full, commit.committedDate);
+  }
+
+  Object.assign(S, { prRuns, evPR, workAt: Date.now() });
+  set({
+    mine: work('mine'), assigned: work('assigned'),
+    reviews: work('reviews'), mentions: work('mentions'),
+    runs: allRuns(), events: allEvents(),
+    err: cleared('mine', 'assigned', 'reviews', 'mentions'),
+  });
+}
+
+// The slow clock: the repo list and a year of contributions, four to six seconds,
+// none of which can move faster than the minute it runs on.
+async function loadRepos() {
+  const now = Date.now();
   let d;
   try {
-    const now = Date.now();
-    d = await gql(DASH_QUERY, {
+    d = await gql(REPOS_QUERY, {
       from: new Date(now - YEAR_MS).toISOString(), to: new Date(now).toISOString(),
     });
-  } catch (e) {
-    for (const k of ['repos', 'runs', 'mine', 'assigned', 'reviews', 'mentions']) failed(k, e);
-    el('auth').hidden = false;
-    return;
-  }
+  } catch (e) { failed('repos', e); return authFailed(e); }
 
   const v = d.viewer;
   const me = { login: v.login, avatar_url: v.avatarUrl };
@@ -1101,83 +1180,138 @@ async function load(quiet = false) {
   el('auth').hidden = true;
 
   // over-fetch, then drop ignored repos, so the list stays full instead of shrinking
-  const repoNodes = (v.repositories?.nodes || []).filter((r) => !ignored(r.nameWithOwner)).slice(0, 25);
+  const repos = (v.repositories?.nodes || [])
+    .filter((r) => !ignored(r.nameWithOwner)).slice(0, 25)
+    .map((r) => ({
+      full_name: r.nameWithOwner, html_url: r.url, private: r.isPrivate, fork: r.isFork,
+      pushed_at: r.pushedAt, owner: ghOwner(r.owner), default_branch: r.defaultBranchRef?.name,
+      language: r.primaryLanguage?.name || '', lang_color: r.primaryLanguage?.color || '#6e7681',
+      open_prs: r.openPRs.totalCount, open_issues: r.openIssues.totalCount,
+      ci_state: r.defaultBranchRef?.target?.statusCheckRollup?.state,
+    }));
 
-  const repos = repoNodes.map((r) => ({
-    full_name: r.nameWithOwner, html_url: r.url, private: r.isPrivate, fork: r.isFork,
-    pushed_at: r.pushedAt, owner: ghOwner(r.owner), default_branch: r.defaultBranchRef?.name,
-    language: r.primaryLanguage?.name || '', lang_color: r.primaryLanguage?.color || '#6e7681',
-    open_prs: r.openPRs.totalCount, open_issues: r.openIssues.totalCount,
-    ci_state: r.defaultBranchRef?.target?.statusCheckRollup?.state,
-  }));
-
-  // day-bucketed contributions, the coarsest source, refined below where possible
-  const events = {};
+  // day-bucketed contributions, the coarsest source, refined by the other two
+  const evContrib = {};
   for (const c of v.contributionsCollection?.commitContributionsByRepository || []) {
-    bump(events, c.repository.nameWithOwner, c.contributions?.nodes?.[0]?.occurredAt, false);
+    bump(evContrib, c.repository.nameWithOwner, c.contributions?.nodes?.[0]?.occurredAt, false);
   }
 
-  const work = (key) => (d[key]?.nodes || []).map(normWork).filter(Boolean);
-  const mine = work('mine');
-
-  // CI on my own PR branches, which default-branch history never sees
-  const prRuns = [];
-  for (const n of d.mine?.nodes || []) {
-    const full = n.repository?.nameWithOwner;
-    const commit = n.commits?.nodes?.[0]?.commit;
-    if (!full || !commit || ignored(full)) continue;
-    prRuns.push(...suitesOf(full, commit, n.headRefName));
-    // The head of a PR I opened is work of mine wherever it sits. Neither of the
-    // other two sources can see it: contributions only count the default branch,
-    // and an unlinked commit email leaves the author unattributed in both.
-    bump(events, full, commit.committedDate);
-  }
-
-  set({
-    me, repos, events, mine,
-    assigned: work('assigned'), reviews: work('reviews'), mentions: work('mentions'),
-  });
+  Object.assign(S, { evContrib, reposAt: now });
+  set({ me, repos, events: allEvents(), err: cleared('repos') });
 
   // A week-bucketed year of commits cannot move faster than this, and refetching
   // 25 of them every minute would spend a third of the hourly REST budget.
   if (!S.sparkAt || Date.now() - S.sparkAt > 36e5) loadSparks(repos.map((r) => r.full_name));
+  return repos;
+}
 
-  if (!repos.length) return set({ runs: [] });
+// Default-branch check suites for the repos on screen. Kept out of the repo query
+// because folding it in pushed GitHub past its own timeout, and fired from the
+// previous list rather than the fresh one, so it runs beside the repo query
+// instead of behind it. Only the very first load has to wait to learn the names.
+async function loadBranchRuns(fulls) {
+  if (!fulls.length) { S.branchRuns = []; return set({ runs: allRuns() }); }
+  let rd;
+  try { rd = await gql(runsQuery(fulls)); }
+  catch (e) {
+    // resolve the panel on the PR half rather than leaving it loading forever,
+    // with the reason above whatever rows that gives
+    S.branchRuns = S.branchRuns || [];
+    set({ runs: allRuns() });
+    return failed('runs', e);
+  }
 
-  // Second query: default-branch runs for the repos actually on screen. Kept apart
-  // from the first because folding it in pushed GitHub past its query timeout.
-  gql(runsQuery(repos.map((r) => r.full_name))).then((rd) => {
-    const runs = [...prRuns];
-    const events2 = { ...S.events };
-    for (const key of Object.keys(rd)) {
-      const node = rd[key];
-      if (key === 'rateLimit' || !node?.nameWithOwner) continue;
-      for (const c of node.defaultBranchRef?.target?.history?.nodes || []) {
-        runs.push(...suitesOf(node.nameWithOwner, c));
-        // an exact commit time beats the day-bucketed contribution when it is mine
-        if (c.author?.user?.login === v.login) bump(events2, node.nameWithOwner, c.committedDate);
-      }
+  const branchRuns = [], evCommit = {};
+  for (const key of Object.keys(rd)) {
+    const node = rd[key];
+    if (key === 'rateLimit' || !node?.nameWithOwner) continue;
+    for (const c of node.defaultBranchRef?.target?.history?.nodes || []) {
+      branchRuns.push(...suitesOf(node.nameWithOwner, c));
+      // an exact commit time beats the day-bucketed contribution when it is mine
+      if (c.author?.user?.login === S.me?.login) bump(evCommit, node.nameWithOwner, c.committedDate);
     }
-    set({ events: events2, runs: runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
-  }, (e) => { set({ runs: prRuns }); failed('runs', e); });
+  }
+  Object.assign(S, { branchRuns, evCommit });
+  set({ runs: allRuns(), events: allEvents(), err: cleared('runs') });
 }
 
 // ---------------------------------------------------------------- events
 
-// One gate for every trigger, so a click during the minute tick cannot start a
-// second pass over the same queries.
-let syncing = false;
-async function sync(quiet) {
-  if (syncing) return;
-  syncing = true;
-  el('sync').classList.add('busy');
-  try { await load(quiet); } finally { syncing = false; el('sync').classList.remove('busy'); }
+// The two clocks overlap by design, so the spinner counts what is in flight
+// rather than following a single pass through the page.
+let inflight = 0;
+const busy = (n) => { inflight += n; el('sync').classList.toggle('busy', inflight > 0); };
+
+// One gate per clock: a click during a tick must not start a second pass over the
+// same queries, but it must still be free to start the other clock's.
+const once = (fn) => {
+  let running = false;
+  return async (...a) => {
+    if (running) return;
+    running = true; busy(1);
+    try { return await fn(...a); } finally { running = false; busy(-1); }
+  };
+};
+
+const syncWork = once(() => Promise.all([loadNotifs(), loadWork()]));
+
+// The runs query needs to know which repos to ask about. After the first load the
+// list is already on screen and barely moves, so send both at once and take the
+// four seconds off the wall clock; only a cold start has to chain them.
+const syncRepos = once(async () => {
+  // a repo ignored since the last pass must not be asked about again
+  const known = (S.repos || []).map((r) => r.full_name).filter((f) => !ignored(f));
+  if (known.length) {
+    await Promise.all([loadRepos(), loadBranchRuns(known)]);
+    return;
+  }
+  const repos = await loadRepos();
+  if (repos) await loadBranchRuns(repos.map((r) => r.full_name));
+});
+
+// Both clocks at once. The counters only ever move down within a pass, whatever
+// order the responses land in, and start over each pass so an hourly reset shows.
+function sync() {
+  const token = pat.value.trim();
+  if (!token) return pat.focus();
+  localStorage.setItem(TOKEN_KEY, token);
+  S.rate = { pts: null, rest: null };
+  return Promise.all([syncWork(), syncRepos()]);
 }
 
-el('go').onclick = () => sync(false);
-pat.onkeydown = (e) => { if (e.key === 'Enter') sync(false); };
-el('sync').onclick = () => sync(true);
-setInterval(() => { if (pat.value.trim()) sync(true); }, 60e3);
+// Load blanks the page first, because a freshly pasted token means the rows on
+// screen may belong to whoever the last one was. Every other trigger swaps each
+// panel out as its data lands, so a refresh never takes away what you are reading.
+function reload() {
+  if (!pat.value.trim()) return pat.focus();
+  Object.assign(S, { prRuns: null, branchRuns: null, evContrib: null, evPR: null, evCommit: null });
+  set({ me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
+        mentions: null, notifs: null, spark: null, sparkAt: null, events: {}, err: {},
+        workAt: 0, reposAt: 0, notifMod: null });
+  return sync();
+}
+
+el('go').onclick = reload;
+pat.onkeydown = (e) => { if (e.key === 'Enter') reload(); };
+el('sync').onclick = () => sync();
+
+// Nothing on this page matters while the tab is in the background, and polling a
+// hidden one all night only spends quota. The tick stops when you look away and
+// the data is brought right the moment you look back. Stale by a few seconds is
+// invisible, stale by however long you were gone is the whole problem.
+const awake = () => document.visibilityState === 'visible' && pat.value.trim();
+setInterval(() => { if (awake()) syncWork(); }, 20e3);
+setInterval(() => { if (awake()) sync(); }, 60e3);
+
+// Flicking between windows is not a reason to refetch; only a gap long enough for
+// what is on screen to have gone stale is.
+const onReturn = () => {
+  if (!awake()) return;
+  if (Date.now() - S.workAt > 10e3) syncWork();
+  if (Date.now() - S.reposAt > 45e3) syncRepos();
+};
+document.addEventListener('visibilitychange', onReturn);
+window.addEventListener('focus', onReturn);
 el('avatar').onclick = () => { el('auth').hidden = !el('auth').hidden; if (!el('auth').hidden) pat.focus(); };
 el('q').oninput = (e) => set({ q: e.target.value });
 el('sort').onclick = () => set({ sort: S.sort === 'anyone' ? 'mine' : 'anyone' });
@@ -1221,7 +1355,7 @@ el('restore').onclick = () => {
 dlg.onclose = () => {
   if (dlg.returnValue !== 'save') { S.ignore = ignoreSnapshot; return; }
   saveSettings();
-  sync(false);                 // ignored repos are skipped at fetch time, so refetch
+  sync();                      // ignored repos are skipped at fetch time, so refetch
 };
 
 const focusFilter = () => { el('q').focus(); el('q').select(); };
@@ -1255,5 +1389,5 @@ setInterval(drawSynced, 10000);
 el('ghhome').innerHTML = svg('github', 'currentColor', 16);
 draw();
 pat.value = localStorage.getItem(TOKEN_KEY) || '';
-if (pat.value) sync(false); else pat.focus();
+if (pat.value) reload(); else pat.focus();
 </script>

@@ -17,7 +17,9 @@ xdg-open index.html    # or open on macOS, or just double-click it
 Paste the output of `gh auth token` into the field in the header and press Load.
 The token goes into `localStorage`, so the next open skips straight to the dashboard.
 
-After that it refreshes itself every minute in the background, without blanking the panels.
+After that it keeps itself current while you are looking at it, without blanking the panels.
+The four things that move minute to minute refresh every 20 seconds, the slower repo list every 60.
+Look away and it stops entirely; look back and it brings itself up to date before you have finished reading the first row.
 If a refresh fails, the rows already on screen stay put rather than being replaced by an error.
 
 Any classic PAT with the `repo` scope works.
@@ -77,17 +79,29 @@ Saving refetches.
 
 A full load is three HTTP requests, and the header shows how much of your hourly quota is left.
 
-| Request | Carries |
-| --- | --- |
-| GraphQL query 1 | Repos, CI rollup, open PR and issue counts, your contributions, all four issue searches, CI on your own PRs |
-| GraphQL query 2 | Default-branch check suites for the repos actually on screen |
-| `GET /notifications` | The activity feed |
+| Request | Carries | Costs | Clock |
+| --- | --- | --- | --- |
+| GraphQL work query | All four issue searches, CI on your own PRs | ~2s | 20s |
+| `GET /notifications` | The activity feed | ~0.5s | 20s |
+| GraphQL repo query | Repos, CI rollup, open PR and issue counts, your contributions | ~4s | 60s |
+| GraphQL runs query | Default-branch check suites for the repos on screen | ~4s | 60s |
 
-Two queries rather than one because one query does not work.
-Folding the second into the first sends 50 repos of nested commit history to the server, and GitHub answers 502 after about eleven seconds, reliably.
-Splitting it also means the repo list and both work panels paint before the Actions feed arrives.
+Three queries rather than one, split twice, for two different reasons.
+
+The runs query is separate because one query does not work.
+Folding it into the repo query sends 50 repos of nested commit history to the server, and GitHub answers 502 after about eleven seconds, reliably.
+It is fired from the repo list already on screen rather than the one currently in flight, so the two run side by side instead of end to end.
+Only a cold start has to wait to learn which repos to ask about.
+
+The work query is separate because of what it costs.
+The repo list is the slow half by a wide margin: across 50 repos, the open PR and issue counts cost about a second and a half, and the CI rollup another second and a half.
+It is also the half that barely changes.
+The four searches come back in about two seconds and hold everything that actually moves while you are watching, so they got their own faster clock rather than queueing behind six seconds of work that would have returned the same answer.
+
+Together that took a refresh from about nine seconds to under two for the panels that matter.
 
 Notifications stay on REST because GraphQL has no equivalent.
+They are sent as conditional requests, so GitHub answers 304 with no rate-limit charge whenever nothing has changed, which is what makes polling them at this rate free.
 
 The rest is a single store and six views over it.
 The panels are not independent: the header pills, the blocking strip and the repo CI glyphs are all derived from what the other panels fetched, which is why they agree with each other.
