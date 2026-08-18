@@ -130,9 +130,33 @@ const rs = [{ full_name: 'o/a', pushed_at: '2026-05-01T00:00:00Z' },
             { full_name: 'o/b', pushed_at: '2026-01-01T00:00:00Z' }];
 const order = () => visibleRepos(rs).map((r) => r.full_name).join(',');
 S.sort = 'anyone';
-ck('sort by anyone uses pushed_at', order(), 'o/a,o/b');
+ck('sort by anyone falls back to pushed_at until branch heads land', order(), 'o/a,o/b');
 S.sort = 'mine';
 ck('sort by me uses my events, unknowns last', order(), 'o/b,o/a');
+
+// Both halves of the LAST column read the same branch heads, so a push to a ref
+// nobody has a PR open on has to move them together.
+S.anyWork = { 'o/b': '2026-09-01T00:00:00Z' };
+S.sort = 'anyone';
+ck('a branch head outranks pushed_at once it lands', order(), 'o/b,o/a');
+ck('...and a repo with no branch head yet still reads pushed_at',
+   anyWorkAt({ full_name: 'o/a', pushed_at: '2026-05-01T00:00:00Z' }), '2026-05-01T00:00:00Z');
+S.anyWork = null;
+ck('dependabot is not someone working on the repo', isBot('dependabot[bot]'), true);
+ck('a bot suffix mid-login is not a bot', isBot('bot-wrangler'), false);
+ck('an unattributed commit is not assumed to be a bot', isBot(null), false);
+
+// The day bucket is the account's timezone, hours away from the local clock, so
+// any exact sighting of my own work has to beat it - a branch head included.
+S.evContrib = { 'o/a': { when: +new Date('2026-05-02T07:00:00Z'), exact: false, at: '2026-05-02T07:00:00Z' } };
+S.evPR = null; S.evCommit = null;
+S.evRefs = { 'o/a': { when: +new Date('2026-05-01T09:15:00Z'), exact: true, at: '2026-05-01T09:15:00Z' } };
+ck('a branch head beats the day bucket even when the bucket looks newer',
+   allEvents()['o/a'].at, '2026-05-01T09:15:00.000Z');
+S.evRefs = null;
+ck('...and with no branch head the bucket still fills the gap',
+   allEvents()['o/a'].at, '2026-05-02T07:00:00.000Z');
+S.evContrib = null; S.events = {};
 const glyph = (i) => ICON[Object.keys(ICON).find((k) => typeIcon(i).includes(ICON[k]))];
 ck('an open PR gets the pull-request octicon', glyph({ isPR: true }), ICON.pr);
 ck('a draft PR gets the draft octicon', glyph({ isPR: true, draft: true }), ICON.prdraft);

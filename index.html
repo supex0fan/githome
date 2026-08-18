@@ -449,7 +449,10 @@ const S = {
   // clocks, so the parts are kept apart and merged on every landing; either half
   // can refresh without discarding the other.
   prRuns: null, branchRuns: null,
-  evContrib: null, evPR: null, evCommit: null,
+  evContrib: null, evPR: null, evCommit: null, evRefs: null,
+  // when anyone last worked in a repo, off the same branch heads as evRefs, so
+  // both halves of the LAST column measure the same thing
+  anyWork: null,
   // when each clock last landed, so returning to the tab can tell what is stale
   workAt: 0, reposAt: 0, notifMod: null,
   // GraphQL points and REST calls are separate hourly budgets, tracked apart
@@ -588,12 +591,18 @@ const normWork = (n) => n && n.repository ? {
 
 // Aliased per repo so only the repos on screen are walked. 25 repos x 5 commits
 // stays well inside the server's budget; 50 x 6 in one query got a 502.
+// Every branch head rides along, because both halves of the LAST column are read
+// off it. refs has no ordering that works on refs/heads — TAG_COMMIT_DATE leaves
+// them shuffled — so the whole set comes back and the newest is picked here.
 const runsQuery = (fulls) => `query {
   rateLimit { cost limit remaining }
 ${fulls.map((f, i) => {
   const [o, n] = f.split('/');
   return `  r${i}: repository(owner: ${JSON.stringify(o)}, name: ${JSON.stringify(n)}) {
     nameWithOwner
+    refs(refPrefix: "refs/heads/", first: 100) {
+      nodes { target { ... on Commit { committedDate author { user { login } } } } }
+    }
     defaultBranchRef { target { ... on Commit {
       history(first: 5) { nodes { oid committedDate author { user { login } } ${SUITE_FIELDS} } }
     } } }
@@ -717,7 +726,7 @@ function decorate(r, broken) {
     ci: ciName ? svg(ciName, ciColor) : '',
     ciFail: broken.has(r.full_name),
     counts: prs == null ? '—' : `${prs}·${issues}`,
-    stale: Date.now() - new Date(r.pushed_at) > STALE_MS,
+    stale: Date.now() - new Date(anyWorkAt(r)) > STALE_MS,
   };
 }
 
@@ -735,6 +744,15 @@ const bump = (map, full, at, exact = true) => {
 };
 const workedAt = (full) => S.events[full]?.at;
 
+// dependabot answers __typename User like anyone else, so the login suffix is the
+// only thing that marks a bot. A bump branch is not someone working on the repo.
+const isBot = (login) => /\[bot\]$/.test(login || '');
+
+// pushed_at moves on any push to any ref, so a dependabot bump read as fresh work
+// and a branch written hours before it was pushed read as newer than it was. Both
+// columns come off the branch heads now; pushed_at only stands in until they land.
+const anyWorkAt = (r) => S.anyWork?.[r.full_name] || r.pushed_at;
+
 const myRepoNames = () => new Set((vWork('mine') || []).map((i) => i.repo));
 
 function visibleRepos(all) {
@@ -745,7 +763,7 @@ function visibleRepos(all) {
   if (S.filter === 'stale') rs = rs.filter((r) => r.stale);
   return [...rs].sort(S.sort === 'mine'
     ? (a, b) => myWork(b) - myWork(a)
-    : (a, b) => new Date(b.pushed_at) - new Date(a.pushed_at));
+    : (a, b) => new Date(anyWorkAt(b)) - new Date(anyWorkAt(a)));
 }
 
 // The four cards are just the most urgent things already on screen, ranked:
@@ -868,7 +886,7 @@ const SORT_LABEL = { anyone: 'last work by anyone', mine: 'last work by me' };
 const myWork = (r) => S.events[r.full_name]?.when || 0;
 const lastWork = (r) => S.sort === 'mine'
   ? (myWork(r) ? ago(workedAt(r.full_name)) : '—')
-  : ago(r.pushed_at);
+  : ago(anyWorkAt(r));
 
 // A year of weekly commit counts as one polyline. Flat-lines a repo with no
 // commits at all rather than dividing by a zero maximum.
@@ -1106,7 +1124,7 @@ const allRuns = () => (S.prRuns && S.branchRuns)
 
 const allEvents = () => {
   const out = {};
-  for (const src of [S.evContrib, S.evPR, S.evCommit])
+  for (const src of [S.evContrib, S.evPR, S.evCommit, S.evRefs])
     for (const [full, e] of Object.entries(src || {})) bump(out, full, e.at, e.exact);
   return out;
 };
@@ -1205,7 +1223,7 @@ async function loadRepos() {
   return repos;
 }
 
-// Default-branch check suites for the repos on screen. Kept out of the repo query
+// Check suites and every branch head for the repos on screen. Kept out of the repo query
 // because folding it in pushed GitHub past its own timeout, and fired from the
 // previous list rather than the fresh one, so it runs beside the repo query
 // instead of behind it. Only the very first load has to wait to learn the names.
@@ -1221,17 +1239,28 @@ async function loadBranchRuns(fulls) {
     return failed('runs', e);
   }
 
-  const branchRuns = [], evCommit = {};
+  const branchRuns = [], evCommit = {}, evRefs = {}, anyWork = {};
   for (const key of Object.keys(rd)) {
     const node = rd[key];
     if (key === 'rateLimit' || !node?.nameWithOwner) continue;
+    const full = node.nameWithOwner;
     for (const c of node.defaultBranchRef?.target?.history?.nodes || []) {
-      branchRuns.push(...suitesOf(node.nameWithOwner, c));
+      branchRuns.push(...suitesOf(full, c));
       // an exact commit time beats the day-bucketed contribution when it is mine
-      if (c.author?.user?.login === S.me?.login) bump(evCommit, node.nameWithOwner, c.committedDate);
+      if (c.author?.user?.login === S.me?.login) bump(evCommit, full, c.committedDate);
+    }
+    // Every branch, not just the default one: work sitting on a branch with no PR
+    // open is invisible to all three of the other sources, which is what let a repo
+    // I had pushed to hours ago still read as months since I last touched it.
+    for (const ref of node.refs?.nodes || []) {
+      const login = ref.target?.author?.user?.login;
+      if (!ref.target?.committedDate || isBot(login)) continue;
+      const at = ref.target.committedDate;
+      if (!anyWork[full] || new Date(at) > new Date(anyWork[full])) anyWork[full] = at;
+      if (login === S.me?.login) bump(evRefs, full, at);
     }
   }
-  Object.assign(S, { branchRuns, evCommit });
+  Object.assign(S, { branchRuns, evCommit, evRefs, anyWork });
   set({ runs: allRuns(), events: allEvents(), err: cleared('runs') });
 }
 
@@ -1284,7 +1313,8 @@ function sync() {
 // panel out as its data lands, so a refresh never takes away what you are reading.
 function reload() {
   if (!pat.value.trim()) return pat.focus();
-  Object.assign(S, { prRuns: null, branchRuns: null, evContrib: null, evPR: null, evCommit: null });
+  Object.assign(S, { prRuns: null, branchRuns: null, anyWork: null,
+                     evContrib: null, evPR: null, evCommit: null, evRefs: null });
   set({ me: null, repos: null, runs: null, mine: null, assigned: null, reviews: null,
         mentions: null, notifs: null, spark: null, sparkAt: null, events: {}, err: {},
         workAt: 0, reposAt: 0, notifMod: null });

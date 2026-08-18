@@ -66,6 +66,11 @@ The `LAST` column follows whichever you picked, so the dates always explain the 
 
 Repos you have not touched show `-` under the second sort and sink to the bottom.
 
+Both readings come off the same thing: the head commit of every branch, the newest for anyone and the newest of yours for you.
+That is the only way the two agree.
+`pushed_at` was the obvious source for the first one and it is not the same measurement - it moves on a push to any ref, so a dependabot bump read as someone working on the repo, and it moves when the push lands rather than when the work was written.
+Branch heads authored by a `[bot]` account are not counted as anyone working.
+
 ## Settings
 
 The gear opens a list of every owner and repository the account can reach, each with a tick or a cross.
@@ -84,7 +89,7 @@ A full load is three HTTP requests, and the header shows how much of your hourly
 | GraphQL work query | All four issue searches, CI on your own PRs | ~2s | 20s |
 | `GET /notifications` | The activity feed | ~0.5s | 20s |
 | GraphQL repo query | Repos, CI rollup, open PR and issue counts, your contributions | ~4s | 60s |
-| GraphQL runs query | Default-branch check suites for the repos on screen | ~4s | 60s |
+| GraphQL runs query | Branch heads and default-branch check suites for the repos on screen | ~4s | 60s |
 
 Three queries rather than one, split twice, for two different reasons.
 
@@ -132,7 +137,11 @@ You need `chromium` on PATH and a working `gh auth`.
 The repo list is the 25 most recently pushed that survive your ignore list, not everything you own.
 The settings list pages up to 500.
 
-Last work by you is exact when one of the commits already fetched for the Actions feed is yours, and day-level otherwise, because that is the granularity `contributionsCollection` reports.
+Last work by you is exact whenever a branch head or a recent default-branch commit is yours, and falls back to `contributionsCollection` otherwise, which reports a whole day stamped in your account's timezone rather than your own.
+So a repo where your last commit has been buried under other people's, and where you have no branch left standing, can still read a day out.
+
+Branch heads are read 100 per repo and attributed by the tip commit's author.
+Work you pushed under an email GitHub cannot match to your account is not counted as yours, and a branch whose tip someone else wrote is theirs even if you pushed it.
 
 The Actions feed walks default-branch history plus your own PR heads.
 Runs on other people's branches in your repos do not appear.
