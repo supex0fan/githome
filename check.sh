@@ -204,7 +204,8 @@ needle = "pat.value = localStorage.getItem(TOKEN_KEY) || '';"
 assert needle in html, "injection point not found"
 # Once the first load settles, run a second one the way the five-minute timer
 # does and watch for a panel going empty. The DOM below is the one left after
-# that quiet sync, so the row counts also have to survive it.
+# that quiet sync, so the row counts also have to survive it. reload() is the
+# only path allowed to blank; sync() must always refresh underneath you.
 probe = """
 <script>
 const PANELS = ['repos', 'runs', 'mine', 'assigned', 'reviews', 'mentions', 'notifs'];
@@ -219,7 +220,7 @@ const settled = () => S.spark && PANELS.every((k) => S[k] !== null || S.err[k]);
     const gone = had.filter((k) => S[k] === null);
     if (gone.length) blanked = gone.join('+');
   }, 20);
-  await sync(true);
+  await sync();
   while (!settled()) await new Promise((r) => setTimeout(r, 100));
   clearInterval(watch);
   document.title = 'QUIET ' + (blanked ? 'FAIL ' + blanked + ' blanked'
